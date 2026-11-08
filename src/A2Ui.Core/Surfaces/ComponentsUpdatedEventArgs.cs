@@ -1,0 +1,8 @@
+using Blazejewicz.A2Ui.Core.Components;
+
+namespace Blazejewicz.A2Ui.Core.Surfaces;
+
+/// <summary>Event arguments for the <see cref="SurfaceManager.ComponentsUpdated"/> event.</summary>
+/// <param name="Surface">The surface whose components were updated.</param>
+/// <param name="Updated">The components that were added or replaced.</param>
+public sealed record ComponentsUpdatedEventArgs(Surface Surface, A2UiComponent[] Updated);

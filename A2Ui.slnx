@@ -1,0 +1,17 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/A2Ui.Core/A2Ui.Core.csproj" />
+    <Project Path="src/AgUi.Protocol/AgUi.Protocol.csproj" />
+    <Project Path="src/A2Ui.Avalonia/A2Ui.Avalonia.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/A2Ui.Core.Tests/A2Ui.Core.Tests.csproj" />
+    <Project Path="tests/AgUi.Protocol.Tests/AgUi.Protocol.Tests.csproj" />
+    <Project Path="tests/A2Ui.Avalonia.Tests/A2Ui.Avalonia.Tests.csproj" />
+    <Project Path="tests/A2Ui.TestHelpers/A2Ui.TestHelpers.csproj" />
+  </Folder>
+  <Folder Name="/samples/">
+    <Project Path="samples/A2Ui.Avalonia.Gallery/A2Ui.Avalonia.Gallery.csproj" />
+    <Project Path="samples/A2Ui.Avalonia.Shell/A2Ui.Avalonia.Shell.csproj" />
+  </Folder>
+</Solution>

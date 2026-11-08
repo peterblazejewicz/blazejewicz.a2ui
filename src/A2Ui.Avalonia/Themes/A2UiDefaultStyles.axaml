@@ -1,0 +1,77 @@
+<Styles xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+  <!-- Typography: Heading1-5, Body, Caption -->
+  <Style Selector="TextBlock.Heading1">
+    <Setter Property="FontSize" Value="32" />
+    <Setter Property="FontWeight" Value="Bold" />
+    <Setter Property="Margin" Value="0,0,0,4" />
+  </Style>
+  <Style Selector="TextBlock.Heading2">
+    <Setter Property="FontSize" Value="26" />
+    <Setter Property="FontWeight" Value="SemiBold" />
+    <Setter Property="Margin" Value="0,0,0,4" />
+  </Style>
+  <Style Selector="TextBlock.Heading3">
+    <Setter Property="FontSize" Value="22" />
+    <Setter Property="FontWeight" Value="SemiBold" />
+    <Setter Property="Margin" Value="0,0,0,2" />
+  </Style>
+  <Style Selector="TextBlock.Heading4">
+    <Setter Property="FontSize" Value="18" />
+    <Setter Property="FontWeight" Value="Medium" />
+  </Style>
+  <Style Selector="TextBlock.Heading5">
+    <Setter Property="FontSize" Value="15" />
+    <Setter Property="FontWeight" Value="Medium" />
+  </Style>
+  <Style Selector="TextBlock.Body">
+    <Setter Property="FontSize" Value="14" />
+  </Style>
+  <Style Selector="TextBlock.Caption">
+    <Setter Property="FontSize" Value="12" />
+    <Setter Property="Opacity" Value="0.7" />
+  </Style>
+
+  <!-- Card -->
+  <Style Selector="Border.Card">
+    <Setter Property="Background" Value="{DynamicResource CardBackgroundFillColorDefaultBrush}" />
+    <Setter Property="BorderBrush" Value="{DynamicResource CardStrokeColorDefaultBrush}" />
+    <Setter Property="BorderThickness" Value="1" />
+    <Setter Property="CornerRadius" Value="8" />
+    <Setter Property="Padding" Value="16" />
+  </Style>
+
+  <!-- Validation error, warning, and info text below form controls -->
+  <Style Selector="TextBlock.ValidationError">
+    <Setter Property="Foreground" Value="#E57373" />
+    <Setter Property="FontSize" Value="12" />
+  </Style>
+  <Style Selector="TextBlock.ValidationWarning">
+    <Setter Property="Foreground" Value="#FFA726" />
+    <Setter Property="FontSize" Value="12" />
+  </Style>
+  <Style Selector="TextBlock.ValidationInfo">
+    <Setter Property="Foreground" Value="#42A5F5" />
+    <Setter Property="FontSize" Value="12" />
+  </Style>
+
+  <!-- Modal close button (×) -->
+  <Style Selector="Button.ModalClose">
+    <Setter Property="Background" Value="Transparent" />
+    <Setter Property="FontSize" Value="18" />
+    <Setter Property="Padding" Value="4" />
+    <Setter Property="MinWidth" Value="30" />
+    <Setter Property="MinHeight" Value="30" />
+  </Style>
+
+  <!-- Button danger variant (Fluent provides accent natively) -->
+  <Style Selector="Button.danger">
+    <Setter Property="Background" Value="#dc2626" />
+    <Setter Property="Foreground" Value="White" />
+  </Style>
+  <Style Selector="Button.danger:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+    <Setter Property="Background" Value="#b91c1c" />
+  </Style>
+
+</Styles>

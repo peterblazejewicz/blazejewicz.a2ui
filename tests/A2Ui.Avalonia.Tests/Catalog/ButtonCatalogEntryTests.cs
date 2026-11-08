@@ -1,0 +1,196 @@
+using Avalonia.Controls;
+using Avalonia.Headless.XUnit;
+using Blazejewicz.A2Ui.Avalonia.Catalog;
+using Blazejewicz.A2Ui.Avalonia.Catalog.Entries;
+using Blazejewicz.A2Ui.Core.Actions;
+using Blazejewicz.A2Ui.Core.Bindings;
+using Blazejewicz.A2Ui.Core.Components;
+using Blazejewicz.A2Ui.Core.Messages;
+using Blazejewicz.A2Ui.Core.Surfaces;
+using Microsoft.Extensions.Logging;
+using Xunit;
+
+namespace Blazejewicz.A2Ui.Avalonia.Tests.Catalog;
+
+public sealed class ButtonCatalogEntryTests
+{
+    [AvaloniaFact]
+    public void ButtonCatalogEntry_Create_WithAction_FiresEventOnClick()
+    {
+        var entry = new ButtonCatalogEntry();
+        var dm = new DataModel();
+        var ctx = new ActionCapturingRenderContext(dm);
+        var component = new ButtonComponent
+        {
+            Id = "btn1",
+            Text = DynamicValue.FromString("Go"),
+            Action = new ComponentAction { Event = new ActionEvent { Name = "go_clicked" } },
+        };
+
+        var control = entry.Create(component, dm, ctx);
+        Assert.IsType<Button>(control);
+        var btn = (Button)control;
+
+        // Simulate click via RaiseEvent
+        btn.RaiseEvent(new global::Avalonia.Interactivity.RoutedEventArgs(Button.ClickEvent));
+
+        Assert.Single(ctx.FiredEvents);
+        Assert.Equal("go_clicked", ctx.FiredEvents[0].EventName);
+    }
+
+    [AvaloniaFact]
+    public void ButtonCatalogEntry_Create_WithActionContext_ResolvesPathsAtClickTime()
+    {
+        var entry = new ButtonCatalogEntry();
+        var dm = new DataModel();
+        var ctx = new ActionCapturingRenderContext(dm);
+
+        var component = new ButtonComponent
+        {
+            Id = "btn2",
+            Text = DynamicValue.FromString("Submit"),
+            Action = new ComponentAction
+            {
+                Event = new ActionEvent
+                {
+                    Name = "form_submitted",
+                    Context = new Dictionary<string, DynamicValue>
+                    {
+                        ["user"] = DynamicValue.FromPath("/username"),
+                        ["greeting"] = DynamicValue.FromString("hello"),
+                    },
+                },
+            },
+        };
+
+        var control = entry.Create(component, dm, ctx);
+        var btn = (Button)control;
+
+        // Set data model values AFTER button creation (simulates user typing)
+        dm.Apply(
+            new UpdateDataModel
+            {
+                SurfaceId = "test",
+                Path = "/username",
+                Value = System.Text.Json.JsonSerializer.SerializeToElement("peter"),
+            }
+        );
+
+        // Click → context should resolve from current data model state
+        btn.RaiseEvent(new global::Avalonia.Interactivity.RoutedEventArgs(Button.ClickEvent));
+
+        Assert.Single(ctx.FiredEvents);
+        var payload = Assert.IsAssignableFrom<Dictionary<string, string?>>(ctx.FiredEvents[0].Payload);
+        Assert.Equal("peter", payload["user"]);
+        Assert.Equal("hello", payload["greeting"]);
+    }
+
+    [AvaloniaFact]
+    public void ButtonCatalogEntry_Create_WithEmptyContext_PassesNullPayload()
+    {
+        var entry = new ButtonCatalogEntry();
+        var dm = new DataModel();
+        var ctx = new ActionCapturingRenderContext(dm);
+
+        var component = new ButtonComponent
+        {
+            Id = "btn3",
+            Text = DynamicValue.FromString("Click"),
+            Action = new ComponentAction
+            {
+                Event = new ActionEvent { Name = "clicked", Context = [] },
+            },
+        };
+
+        var control = entry.Create(component, dm, ctx);
+        var btn = (Button)control;
+        btn.RaiseEvent(new global::Avalonia.Interactivity.RoutedEventArgs(Button.ClickEvent));
+
+        Assert.Single(ctx.FiredEvents);
+        Assert.Null(ctx.FiredEvents[0].Payload);
+    }
+
+    [AvaloniaFact]
+    public void ButtonCatalogEntry_Create_WithoutAction_DoesNotThrow()
+    {
+        var entry = new ButtonCatalogEntry();
+        var dm = new DataModel();
+        var ctx = new ActionCapturingRenderContext(dm);
+
+        var component = new ButtonComponent
+        {
+            Id = "btn4",
+            Text = DynamicValue.FromString("Display Only"),
+            // No Action set
+        };
+
+        var control = entry.Create(component, dm, ctx);
+        Assert.IsType<Button>(control);
+        var btn = (Button)control;
+
+        // Click should not throw or fire events
+        btn.RaiseEvent(new global::Avalonia.Interactivity.RoutedEventArgs(Button.ClickEvent));
+        Assert.Empty(ctx.FiredEvents);
+    }
+
+    [AvaloniaFact]
+    public void ButtonCatalogEntry_Create_PrimaryVariant_HasAccentClass()
+    {
+        var entry = new ButtonCatalogEntry();
+        var dm = new DataModel();
+        var ctx = new ActionCapturingRenderContext(dm);
+
+        var component = new ButtonComponent
+        {
+            Id = "btn5",
+            Text = DynamicValue.FromString("Primary"),
+            Variant = "primary",
+        };
+
+        var control = entry.Create(component, dm, ctx);
+        Assert.Contains("accent", control.Classes);
+    }
+
+    [AvaloniaFact]
+    public void ButtonCatalogEntry_Create_BorderlessVariant_HasBorderlessClass()
+    {
+        var entry = new ButtonCatalogEntry();
+        var dm = new DataModel();
+        var ctx = new ActionCapturingRenderContext(dm);
+
+        var component = new ButtonComponent
+        {
+            Id = "btn6",
+            Text = DynamicValue.FromString("Borderless"),
+            Variant = "borderless",
+        };
+
+        var control = entry.Create(component, dm, ctx);
+        Assert.Contains("borderless", control.Classes);
+    }
+}
+
+/// <summary>
+/// Render context that captures fired user actions for assertion.
+/// </summary>
+internal sealed class ActionCapturingRenderContext(DataModel dm) : IRenderContext
+{
+    public List<(string EventName, object? Payload, string? ComponentId)> FiredEvents { get; } = [];
+
+    public Control? RenderChild(string? childId) => null;
+
+    public IEnumerable<Control> RenderChildren(string parentId) => [];
+
+    public void FireUserAction(string eventName, object? payload = null, string? componentId = null) =>
+        this.FiredEvents.Add((eventName, payload, componentId));
+
+    public string? Resolve(DynamicValue? value) => dm.Resolve(value);
+
+    public void UpdateDataModel(string path, string? value) { }
+
+    public double? GetComponentWeight(string componentId) => null;
+
+    public ILogger? Logger => null;
+
+    public CancellationToken SurfaceCancellation => CancellationToken.None;
+}

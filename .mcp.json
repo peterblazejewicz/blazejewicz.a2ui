@@ -1,0 +1,24 @@
+{
+  "mcpServers": {
+    "microsoft-learn": {
+      "type": "http",
+      "url": "https://learn.microsoft.com/api/mcp"
+    },
+    "avalonia-docs": {
+      "type": "http",
+      "url": "https://docs-mcp.avaloniaui.net/mcp"
+    },
+    "context7": {
+      "type": "http",
+      "url": "https://mcp.context7.com/mcp"
+    },
+    "mermaid": {
+      "type": "http",
+      "url": "https://chatgpt.mermaid.ai/mcp"
+    },
+    "github-copilot": {
+      "type": "http",
+      "url": "https://api.githubcopilot.com/mcp/"
+    }
+  }
+}

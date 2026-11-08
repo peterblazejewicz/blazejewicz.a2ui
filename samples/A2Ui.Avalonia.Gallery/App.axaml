@@ -1,0 +1,47 @@
+<Application xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="Blazejewicz.A2Ui.Avalonia.Gallery.App"
+             RequestedThemeVariant="Dark">
+  <Application.Styles>
+    <FluentTheme />
+
+    <!-- Gallery shell styles (application-level, not renderer) -->
+
+    <!-- Selected list item: subtle dark background -->
+    <Style Selector="ListBoxItem:selected /template/ ContentPresenter">
+      <Setter Property="Background" Value="#0E3856" />
+    </Style>
+
+    <!-- Selected list item: left cyan accent border on the inner Border -->
+    <Style Selector="ListBoxItem:selected Border">
+      <Setter Property="BorderBrush" Value="{DynamicResource GalleryAccent}" />
+    </Style>
+
+    <!-- Remove the default focus adorner rectangle from list items -->
+    <Style Selector="ListBoxItem">
+      <Setter Property="FocusAdorner" Value="{x:Null}" />
+      <Setter Property="Padding" Value="0" />
+    </Style>
+
+    <!-- Remove focus adorner from surface area controls to avoid blue outlines -->
+    <Style Selector="Border.Card">
+      <Setter Property="FocusAdorner" Value="{x:Null}" />
+    </Style>
+
+    <!-- Accent button color override (Fluent theme accent) -->
+    <Style Selector="Button.accent">
+      <Setter Property="FocusAdorner" Value="{x:Null}" />
+    </Style>
+  </Application.Styles>
+
+  <Application.Resources>
+    <SolidColorBrush x:Key="GalleryBackground" Color="#0f172a" />
+    <SolidColorBrush x:Key="GalleryPanel" Color="#1e293b" />
+    <SolidColorBrush x:Key="GalleryInspector" Color="#020617" />
+    <SolidColorBrush x:Key="GalleryAccent" Color="#38bdf8" />
+    <SolidColorBrush x:Key="GalleryText" Color="#f1f5f9" />
+    <SolidColorBrush x:Key="GallerySubtext" Color="#94a3b8" />
+    <SolidColorBrush x:Key="GallerySurface" Color="#0B1625" />
+    <SolidColorBrush x:Key="GalleryBorder" Color="#1e3a5f" />
+  </Application.Resources>
+</Application>
