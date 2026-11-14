@@ -3,7 +3,9 @@ using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Threading;
 using Blazejewicz.A2Ui.Avalonia.Catalog;
-using Blazejewicz.A2Ui.Avalonia.Functions;
+using Blazejewicz.A2Ui.Core.Functions;
+using Blazejewicz.A2Ui.Core.Messages;
+using Blazejewicz.A2Ui.Core.Rpc;
 using Blazejewicz.A2Ui.Core.Surfaces;
 using Microsoft.Extensions.Logging;
 
@@ -44,13 +46,14 @@ public sealed class A2UiSurface : ContentControl
         this._renderer = new A2UiRenderer(catalog, functionRegistry, loggerFactory);
         this._renderer.UserActionFired += this.OnUserActionFired;
         this._renderer.DataModelChanged += this.OnDataModelChanged;
+        this._renderer.ErrorReported += this.OnErrorReported;
 
         // Load default component styles (typography, card, button variants).
         // Consuming apps override these via Application-level styles.
         this.Styles.Add(
-            new global::Avalonia.Markup.Xaml.Styling.StyleInclude(new Uri("avares://A2Ui.Avalonia"))
+            new global::Avalonia.Markup.Xaml.Styling.StyleInclude(new Uri("avares://Blazejewicz.A2Ui.Avalonia"))
             {
-                Source = new Uri("avares://A2Ui.Avalonia/Themes/A2UiDefaultStyles.axaml"),
+                Source = new Uri("avares://Blazejewicz.A2Ui.Avalonia/Themes/A2UiDefaultStyles.axaml"),
             }
         );
     }
@@ -62,11 +65,21 @@ public sealed class A2UiSurface : ContentControl
         set => this.SetValue(SurfaceProperty, value);
     }
 
+    /// <summary>Gets or sets the optional RPC handler for bidirectional function invocation.</summary>
+    public RpcHandler? RpcHandler
+    {
+        get => this._renderer.RpcHandler;
+        set => this._renderer.RpcHandler = value;
+    }
+
     /// <summary>Raised when a user interacts with a rendered component (e.g., button click).</summary>
     public event EventHandler<UserActionEventArgs>? UserActionFired;
 
     /// <summary>Raised when the data model is mutated via two-way binding.</summary>
     public event EventHandler<DataModelChangedEventArgs>? DataModelChanged;
+
+    /// <summary>Raised when a renderer error occurs (e.g. invalid action or action failure).</summary>
+    public event EventHandler<RendererToAgentMessage>? ErrorReported;
 
     /// <summary>
     /// Re-create the internal renderer with logging enabled.
@@ -75,15 +88,20 @@ public sealed class A2UiSurface : ContentControl
     /// </summary>
     public void SetLoggerFactory(ILoggerFactory loggerFactory)
     {
+        RpcHandler? existingRpc = this._renderer.RpcHandler;
         this._renderer.UserActionFired -= this.OnUserActionFired;
         this._renderer.DataModelChanged -= this.OnDataModelChanged;
+        this._renderer.ErrorReported -= this.OnErrorReported;
+        this._renderer.Dispose();
         this._renderer = new A2UiRenderer(
             CatalogRegistry.CreateDefault(loggerFactory),
             FunctionRegistry.CreateDefault(loggerFactory),
-            loggerFactory
+            loggerFactory,
+            existingRpc
         );
         this._renderer.UserActionFired += this.OnUserActionFired;
         this._renderer.DataModelChanged += this.OnDataModelChanged;
+        this._renderer.ErrorReported += this.OnErrorReported;
     }
 
     /// <summary>
@@ -128,11 +146,23 @@ public sealed class A2UiSurface : ContentControl
             var topLevel = TopLevel.GetTopLevel(this);
             IInputElement? focused = topLevel?.FocusManager?.GetFocusedElement();
 
-            this.Content = this._renderer.Render(surface);
+            Control? rendered = this._renderer.Render(surface);
+            if (!ReferenceEquals(this.Content, rendered))
+            {
+                if (rendered is not null)
+                {
+                    RenderContext.DetachFromParent(rendered);
+                }
 
-            // Restore focus: the same control instance is still in the tree
-            // (reused by the renderer cache) but lost focus during re-parenting.
-            if (focused is InputElement focusable)
+                this.Content = rendered;
+            }
+
+            // Restore focus only if focus was actually lost during re-parenting, preserving
+            // caret position and IME state on an active TextBox during data-model updates.
+            if (
+                focused is InputElement focusable
+                && !ReferenceEquals(topLevel?.FocusManager?.GetFocusedElement(), focused)
+            )
             {
                 focusable.Focus();
             }
@@ -170,16 +200,32 @@ public sealed class A2UiSurface : ContentControl
             var surface = change.GetNewValue<Surface?>();
             if (Dispatcher.UIThread.CheckAccess())
             {
-                this.Content = surface is null ? null : this._renderer.Render(surface);
+                this.ApplyRenderedSurface(surface);
             }
             else
             {
-                Dispatcher.UIThread.Post(() => this.Content = surface is null ? null : this._renderer.Render(surface));
+                Dispatcher.UIThread.Post(() => this.ApplyRenderedSurface(surface));
             }
+        }
+    }
+
+    private void ApplyRenderedSurface(Surface? surface)
+    {
+        Control? rendered = surface is null ? null : this._renderer.Render(surface);
+        if (!ReferenceEquals(this.Content, rendered))
+        {
+            if (rendered is not null)
+            {
+                RenderContext.DetachFromParent(rendered);
+            }
+
+            this.Content = rendered;
         }
     }
 
     private void OnUserActionFired(object? sender, UserActionEventArgs e) => UserActionFired?.Invoke(this, e);
 
     private void OnDataModelChanged(object? sender, DataModelChangedEventArgs e) => DataModelChanged?.Invoke(this, e);
+
+    private void OnErrorReported(object? sender, RendererToAgentMessage e) => ErrorReported?.Invoke(this, e);
 }

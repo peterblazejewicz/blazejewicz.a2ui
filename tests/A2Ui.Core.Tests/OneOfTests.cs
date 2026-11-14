@@ -1,7 +1,14 @@
-namespace Blazejewicz.A2Ui.Core.Tests.A2Ui;
+namespace Blazejewicz.A2Ui.Core.Tests;
 
 public sealed class OneOfTests
 {
+    [Fact]
+    public void OneOfTypes_AreInternal_NotExposedPublicly()
+    {
+        Assert.False(typeof(OneOf<,>).IsPublic);
+        Assert.False(typeof(OneOf<,,>).IsPublic);
+    }
+
     // --- OneOf<T1, T2> ---
 
     [Fact]

@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Avalonia.Controls;
 using Blazejewicz.A2Ui.Avalonia.Catalog;
 using Blazejewicz.A2Ui.Core.Bindings;
@@ -20,10 +21,19 @@ internal sealed class MockRenderContext(DataModel dataModel) : IRenderContext
 
     public string? Resolve(DynamicValue? value) => dataModel.Resolve(value);
 
+    public JsonElement? ResolveJsonElement(DynamicValue? value) => dataModel.ResolveJsonElement(value);
+
     public void UpdateDataModel(string path, string? value)
     {
         this.DataModelUpdates.Add((path, value));
-        dataModel.Apply(path, value is not null ? System.Text.Json.JsonSerializer.SerializeToElement(value) : null);
+        dataModel.Apply(path, value is not null ? JsonSerializer.SerializeToElement(value) : null);
+    }
+
+    public void UpdateDataModel(string path, JsonElement? value)
+    {
+        string? recorded = value is { ValueKind: JsonValueKind.String } s ? s.GetString() : value?.GetRawText();
+        this.DataModelUpdates.Add((path, recorded));
+        dataModel.Apply(path, value);
     }
 
     public double? GetComponentWeight(string componentId) => null;

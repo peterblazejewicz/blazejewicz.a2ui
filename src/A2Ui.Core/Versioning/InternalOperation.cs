@@ -50,7 +50,7 @@ public sealed record CreateSurfaceOp : InternalOperation
     /// <summary>Supported catalog IDs for this surface.</summary>
     public IReadOnlyList<string>? SupportedCatalogIds { get; init; }
 
-    /// <summary>Whether to strictly enforce surface ID uniqueness on creation.</summary>
+    /// <summary>Whether duplicate creation of an already-active surface ID must fail even when StrictMode is disabled (v1.0).</summary>
     public bool EnforceUniqueness { get; init; }
 
     /// <summary>Protocol specification version of this surface.</summary>
@@ -71,6 +71,9 @@ public sealed record UpdateComponentsOp : InternalOperation
 
     /// <summary>Components to add or update.</summary>
     public required IReadOnlyList<A2UiComponent> Components { get; init; }
+
+    /// <summary>Protocol specification version of this operation.</summary>
+    public string ProtocolVersion { get; init; } = A2UiProtocol.Version10;
 }
 
 /// <summary>Internal operation representing a data model update.</summary>
@@ -93,6 +96,9 @@ public sealed record UpdateDataModelOp : InternalOperation
 
     /// <summary>When true, null values delete the target path.</summary>
     public bool DeleteOnNull { get; init; }
+
+    /// <summary>Protocol specification version of this operation.</summary>
+    public string ProtocolVersion { get; init; } = A2UiProtocol.Version10;
 }
 
 /// <summary>Internal operation representing a surface deletion request.</summary>
@@ -106,6 +112,9 @@ public sealed record DeleteSurfaceOp : InternalOperation
 
     /// <summary>Identifier of the surface to delete.</summary>
     public required string SurfaceId { get; init; }
+
+    /// <summary>Protocol specification version of this operation.</summary>
+    public string ProtocolVersion { get; init; } = A2UiProtocol.Version10;
 }
 
 /// <summary>Internal operation representing a renderer-executed function call request.</summary>

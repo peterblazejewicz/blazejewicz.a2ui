@@ -4,11 +4,12 @@ using Blazejewicz.A2Ui.Core.Components;
 using Blazejewicz.A2Ui.Core.Messages;
 using Blazejewicz.A2Ui.Core.Surfaces;
 
-namespace Blazejewicz.A2Ui.Core.Tests.A2Ui;
+namespace Blazejewicz.A2Ui.Core.Tests;
 
 public sealed class SurfaceManagerStrictModeTests
 {
     private static readonly SurfaceManagerOptions s_strict = new() { StrictMode = true };
+    private static readonly SurfaceManagerOptions s_lenient = new() { StrictMode = false };
 
     private static A2UiMessage CreateMsg(string surfaceId) =>
         new()
@@ -32,10 +33,10 @@ public sealed class SurfaceManagerStrictModeTests
     [Fact]
     public void Process_DuplicateCreate_LenientMode_NoThrow()
     {
-        var sm = new SurfaceManager();
+        var sm = new SurfaceManager(options: s_lenient);
         sm.Process(CreateMsg("main"));
 
-        // No throw — lenient path is preserved for default-constructed SurfaceManager
+        // No throw — lenient path is preserved when StrictMode is false
         sm.Process(CreateMsg("main"));
 
         Assert.NotNull(sm.GetSurface("main"));
@@ -172,7 +173,7 @@ public sealed class SurfaceManagerStrictModeTests
     [Fact]
     public void Process_UpdateDataModelMalformedPath_LenientMode_LogsAndContinues()
     {
-        var sm = new SurfaceManager();
+        var sm = new SurfaceManager(options: s_lenient);
         sm.Process(CreateMsg("main"));
         sm.Process(
             new A2UiMessage

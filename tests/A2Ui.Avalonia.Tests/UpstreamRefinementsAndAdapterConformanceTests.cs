@@ -7,7 +7,6 @@ using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Media;
 using Blazejewicz.A2Ui.Avalonia.Catalog;
-using Blazejewicz.A2Ui.Avalonia.Functions;
 using Blazejewicz.A2Ui.Core;
 using Blazejewicz.A2Ui.Core.Accessibility;
 using Blazejewicz.A2Ui.Core.Actions;
@@ -15,6 +14,7 @@ using Blazejewicz.A2Ui.Core.Bindings;
 using Blazejewicz.A2Ui.Core.Children;
 using Blazejewicz.A2Ui.Core.Choices;
 using Blazejewicz.A2Ui.Core.Components;
+using Blazejewicz.A2Ui.Core.Functions;
 using Blazejewicz.A2Ui.Core.Messages;
 using Blazejewicz.A2Ui.Core.Surfaces;
 using Blazejewicz.A2Ui.Core.Tabs;
@@ -297,7 +297,7 @@ public sealed class UpstreamRefinementsAndAdapterConformanceTests
         Assert.Equal("Accessible Label", AutomationProperties.GetName(tb));
         Assert.Equal("Accessible Description", AutomationProperties.GetHelpText(tb));
         Assert.Equal(AutomationLiveSetting.Assertive, AutomationProperties.GetLiveSetting(tb));
-        Assert.False(tb.IsVisible);
+        Assert.True(tb.IsVisible);
         Assert.Equal(AccessibilityView.Raw, AutomationProperties.GetAccessibilityView(tb));
 
         // 2. Update with accessibility omitted
@@ -896,8 +896,8 @@ public sealed class UpstreamRefinementsAndAdapterConformanceTests
         eventBtn.RaiseEvent(new RoutedEventArgs(Button.ClickEvent, eventBtn));
         Assert.NotNull(capturedEvent);
         Assert.Equal("buy_item", capturedEvent.EventName);
-        var payload = Assert.IsType<Dictionary<string, string?>>(capturedEvent.Payload);
-        Assert.Equal("sku-42", payload["sku"]);
+        var payload = Assert.IsType<Dictionary<string, JsonElement>>(capturedEvent.Payload);
+        Assert.Equal("sku-42", payload["sku"].GetString());
 
         capturedEvent = null;
 

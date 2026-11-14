@@ -1,3 +1,4 @@
+using System.Collections.Frozen;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Blazejewicz.A2Ui.Core.Validation;
@@ -24,17 +25,24 @@ public sealed record FunctionCallValue
     public string? ReturnType { get; init; }
 }
 
-internal sealed class FunctionCallValueConverter : JsonConverter<FunctionCallValue>
+internal sealed class FunctionCallValueConverter(string? fixedProtocolVersion) : JsonConverter<FunctionCallValue>
 {
-    private static readonly HashSet<string> s_validReturnTypes = new(StringComparer.Ordinal)
-    {
-        "string",
-        "number",
-        "boolean",
-        "array",
-        "object",
-        "any",
-    };
+    private static readonly FrozenSet<string> s_validReturnTypes = FrozenSet.ToFrozenSet(
+        [
+            "string",
+            "number",
+            "boolean",
+            "array",
+            "object",
+            "any",
+        ],
+        StringComparer.Ordinal
+    );
+
+    private readonly string? _fixedProtocolVersion = fixedProtocolVersion;
+
+    public FunctionCallValueConverter()
+        : this(null) { }
 
     public override FunctionCallValue? Read(
         ref Utf8JsonReader reader,
@@ -44,7 +52,8 @@ internal sealed class FunctionCallValueConverter : JsonConverter<FunctionCallVal
     {
         using var doc = JsonDocument.ParseValue(ref reader);
         var root = doc.RootElement;
-        bool isV10 = DynamicValueConverter.CurrentProtocolVersion.Value == A2UiProtocol.Version10;
+        bool isV10 =
+            DynamicValueConverter.ResolveProtocolVersion(this._fixedProtocolVersion, options) == A2UiProtocol.Version10;
         string? call = null;
 
         if (isV10)
@@ -139,7 +148,7 @@ internal sealed class FunctionCallValueConverter : JsonConverter<FunctionCallVal
     {
         writer.WriteStartObject();
         bool isV10 =
-            DynamicValueConverter.CurrentProtocolVersion.Value == A2UiProtocol.Version10
+            DynamicValueConverter.ResolveProtocolVersion(this._fixedProtocolVersion, options) == A2UiProtocol.Version10
             || value.Call.StartsWith('@')
             || !string.IsNullOrEmpty(value.CatalogId);
 

@@ -2,16 +2,18 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
+using Avalonia;
 using Avalonia.Automation;
 using Avalonia.Controls;
+using Avalonia.LogicalTree;
 using Avalonia.Threading;
 using Blazejewicz.A2Ui.Avalonia.Catalog;
 using Blazejewicz.A2Ui.Avalonia.Catalog.Entries;
-using Blazejewicz.A2Ui.Avalonia.Functions;
 using Blazejewicz.A2Ui.Core;
 using Blazejewicz.A2Ui.Core.Bindings;
 using Blazejewicz.A2Ui.Core.Children;
 using Blazejewicz.A2Ui.Core.Components;
+using Blazejewicz.A2Ui.Core.Functions;
 using Blazejewicz.A2Ui.Core.Messages;
 using Blazejewicz.A2Ui.Core.Rpc;
 using Blazejewicz.A2Ui.Core.Surfaces;
@@ -28,17 +30,22 @@ public sealed class A2UiRenderer(
     CatalogRegistry catalog,
     IFunctionRegistry? functionRegistry = null,
     ILoggerFactory? loggerFactory = null,
-    RpcHandler? rpcHandler = null
-)
+    RpcHandler? rpcHandler = null,
+    A2UiAvaloniaOptions? options = null
+) : IDisposable
 {
     private readonly CatalogRegistry _catalog = catalog;
     private readonly IFunctionRegistry? _functionRegistry = functionRegistry;
     private readonly ILogger<A2UiRenderer> _logger = (loggerFactory ?? NullLoggerFactory.Instance).CreateLogger<A2UiRenderer>();
+    private readonly Dictionary<string, WeakReference<Surface>> _surfaceInstances = [];
     private readonly Dictionary<string, Dictionary<string, Control>> _surfaceCaches = [];
+    private readonly Dictionary<string, SurfaceRpcCache> _rpcCaches = [];
     private readonly Dictionary<string, CancellationTokenSource> _surfaceCts = [];
+    private readonly A2UiAvaloniaOptions? _options = options;
+    private bool _disposed;
 
     /// <summary>Optional RPC handler for agent-backed catalog functions.</summary>
-    public RpcHandler? RpcHandler { get; } = rpcHandler;
+    public RpcHandler? RpcHandler { get; internal set; } = rpcHandler;
 
     /// <summary>
     /// Render or update the complete surface.
@@ -48,9 +55,6 @@ public sealed class A2UiRenderer(
     {
         Dispatcher.UIThread.VerifyAccess();
 
-        using IDisposable versionScope = DynamicValueConverter.EnterVersionScope(
-            surface.ProtocolVersion ?? A2UiProtocol.Version091
-        );
         using Activity? activity = Diagnostics.RendererSource.StartActivity("Renderer.Render", ActivityKind.Internal);
         activity?.SetTag("a2ui.surface_id", surface.SurfaceId);
         activity?.SetTag("a2ui.catalog_id", surface.CatalogId);
@@ -66,10 +70,26 @@ public sealed class A2UiRenderer(
             );
         }
 
+        if (
+            this._surfaceInstances.TryGetValue(surface.SurfaceId, out var prevRef)
+            && (!prevRef.TryGetTarget(out var prevSurface) || !ReferenceEquals(prevSurface, surface))
+        )
+        {
+            this.ClearSurface(surface.SurfaceId);
+        }
+
+        this._surfaceInstances[surface.SurfaceId] = new WeakReference<Surface>(surface);
+
         if (!this._surfaceCaches.TryGetValue(surface.SurfaceId, out var cache))
         {
             cache = [];
             this._surfaceCaches[surface.SurfaceId] = cache;
+        }
+
+        if (!this._rpcCaches.TryGetValue(surface.SurfaceId, out var rpcCache))
+        {
+            rpcCache = new SurfaceRpcCache();
+            this._rpcCaches[surface.SurfaceId] = rpcCache;
         }
 
         if (!this._surfaceCts.TryGetValue(surface.SurfaceId, out var cts))
@@ -78,18 +98,42 @@ public sealed class A2UiRenderer(
             this._surfaceCts[surface.SurfaceId] = cts;
         }
 
-        var context = new RenderContext(
+        var session = new RenderSession(
             surface,
             this._catalog,
-            cache,
             this._functionRegistry,
             (surfaceId, eventName, payload, componentId, userMessage) =>
-                UserActionFired?.Invoke(this, new(surfaceId, eventName, payload, componentId, userMessage)),
-            (surfaceId) => DataModelChanged?.Invoke(this, new(surfaceId)),
-            logger: this._logger,
-            surfaceCancellation: cts.Token,
-            rpcHandler: this.RpcHandler
+                this.UserActionFired?.Invoke(this, new(surfaceId, eventName, payload, componentId, userMessage)),
+            surfaceId => this.DataModelChanged?.Invoke(this, new(surfaceId)),
+            Logger: this._logger,
+            SurfaceCancellation: cts.Token,
+            RpcHandler: this.RpcHandler,
+            Options: this._options,
+            RpcCache: rpcCache,
+            OnRpcSettled: s =>
+            {
+                if (
+                    !this._disposed
+                    && this._surfaceInstances.TryGetValue(s.SurfaceId, out var currentRef)
+                    && currentRef.TryGetTarget(out var currentSurface)
+                    && ReferenceEquals(currentSurface, s)
+                )
+                {
+                    _ = this.Render(s);
+                    this.DataModelChanged?.Invoke(this, new(s.SurfaceId));
+                }
+            },
+            OnRendererError: error =>
+                this.ErrorReported?.Invoke(
+                    this,
+                    new RendererToAgentMessage
+                    {
+                        Version = surface.ProtocolVersion ?? A2UiProtocol.Version10,
+                        Error = error,
+                    }
+                )
         );
+        var context = new RenderContext(session, cache);
 
         var roots = surface.GetRootComponents().ToList();
 
@@ -101,7 +145,9 @@ public sealed class A2UiRenderer(
         var container = new StackPanel { Spacing = 8 };
         foreach (var root in roots)
         {
-            container.Children.Add(this.RenderComponent(root, surface, context));
+            var renderedRoot = this.RenderComponent(root, surface, context);
+            RenderContext.DetachFromParent(renderedRoot, this._logger);
+            container.Children.Add(renderedRoot);
         }
 
         return container;
@@ -112,6 +158,9 @@ public sealed class A2UiRenderer(
 
     /// <summary>Raised when the data model is mutated via two-way binding (e.g., text input).</summary>
     public event EventHandler<DataModelChangedEventArgs>? DataModelChanged;
+
+    /// <summary>Raised when a renderer error occurs during action dispatch, expression evaluation, or RPC routing.</summary>
+    public event EventHandler<RendererToAgentMessage>? ErrorReported;
 
     private Control RenderComponent(A2UiComponent component, Surface surface, RenderContext context)
     {
@@ -138,17 +187,39 @@ public sealed class A2UiRenderer(
         try
         {
             var cache = this._surfaceCaches.GetValueOrDefault(surface.SurfaceId);
-            if (
-                cache is not null
-                && cache.TryGetValue(component.Id, out var existing)
-                && entry.Update(existing, component, surface.DataModel, context)
-            )
+            if (cache is not null && cache.TryGetValue(component.Id, out var existing))
             {
-                ApplyAccessibility(existing, component, context);
-                return existing;
+                Control? previousContainer = context.UpdatingContainer;
+                context.UpdatingContainer = existing;
+                bool updated;
+                try
+                {
+                    updated = entry.Update(existing, component, surface.DataModel, context);
+                }
+                finally
+                {
+                    context.UpdatingContainer = previousContainer;
+                }
+
+                if (updated)
+                {
+                    ApplyAccessibility(existing, component, context);
+                    return existing;
+                }
             }
 
-            var control = entry.Create(component, surface.DataModel, context);
+            Control? previousForCreate = context.UpdatingContainer;
+            context.UpdatingContainer = null;
+            Control control;
+            try
+            {
+                control = entry.Create(component, surface.DataModel, context);
+            }
+            finally
+            {
+                context.UpdatingContainer = previousForCreate;
+            }
+
             ApplyAccessibility(control, component, context);
             cache?[component.Id] = control;
 
@@ -163,7 +234,9 @@ public sealed class A2UiRenderer(
     /// <summary>Clear control cache for a specific surface and cancel in-flight async operations.</summary>
     public void ClearSurface(string surfaceId)
     {
+        this._surfaceInstances.Remove(surfaceId);
         this._surfaceCaches.Remove(surfaceId);
+        this._rpcCaches.Remove(surfaceId);
 
         if (this._surfaceCts.Remove(surfaceId, out var cts))
         {
@@ -171,6 +244,32 @@ public sealed class A2UiRenderer(
             cts.Dispose();
         }
     }
+
+    /// <summary>
+    /// Disposes the renderer, cancelling and disposing all per-surface cancellation tokens and clearing caches.
+    /// </summary>
+    public void Dispose()
+    {
+        if (this._disposed)
+        {
+            return;
+        }
+
+        this._disposed = true;
+        this._surfaceInstances.Clear();
+        this._surfaceCaches.Clear();
+        this._rpcCaches.Clear();
+        foreach (var cts in this._surfaceCts.Values)
+        {
+            cts.Cancel();
+            cts.Dispose();
+        }
+
+        this._surfaceCts.Clear();
+    }
+
+    private static readonly AttachedProperty<bool> s_isExplicitlyHiddenProperty =
+        AvaloniaProperty.RegisterAttached<A2UiRenderer, Control, bool>("IsExplicitlyHidden");
 
     internal static void ApplyAccessibility(Control control, A2UiComponent component, IRenderContext context)
     {
@@ -182,7 +281,20 @@ public sealed class A2UiRenderer(
         string? description = acc?.Description is not null ? context.Resolve(acc.Description) : null;
         AutomationProperties.SetHelpText(control, string.IsNullOrEmpty(description) ? null : description);
 
-        var setting = acc?.Live?.ToLowerInvariant() switch
+        string? protocolVersion = (context as RenderContext)?.Surface.ProtocolVersion;
+        bool supportsV10Accessibility =
+            protocolVersion is null
+            || string.Equals(protocolVersion, A2UiProtocol.Version10, StringComparison.Ordinal);
+
+        if (!supportsV10Accessibility)
+        {
+            AutomationProperties.SetLiveSetting(control, AutomationLiveSetting.Off);
+            control.SetValue(s_isExplicitlyHiddenProperty, false);
+            PropagateSubtreeAccessibilityView(control, HasExplicitlyHiddenAncestor(control));
+            return;
+        }
+
+        var setting = acc?.Live switch
         {
             "polite" => AutomationLiveSetting.Polite,
             "assertive" => AutomationLiveSetting.Assertive,
@@ -200,77 +312,171 @@ public sealed class A2UiRenderer(
             }
         }
 
-        control.IsVisible = !isHidden;
+        control.SetValue(s_isExplicitlyHiddenProperty, isHidden);
+        bool effectiveHidden = isHidden || HasExplicitlyHiddenAncestor(control);
+        PropagateSubtreeAccessibilityView(control, effectiveHidden);
+    }
+
+    private static bool HasExplicitlyHiddenAncestor(Control control)
+    {
+        ILogical? parent = ((ILogical)control).LogicalParent;
+        while (parent is not null)
+        {
+            if (parent is Control parentControl && parentControl.GetValue(s_isExplicitlyHiddenProperty))
+            {
+                return true;
+            }
+
+            parent = parent.LogicalParent;
+        }
+
+        return false;
+    }
+
+    private static void PropagateSubtreeAccessibilityView(Control control, bool effectiveHidden)
+    {
         AutomationProperties.SetAccessibilityView(
             control,
-            isHidden ? AccessibilityView.Raw : AccessibilityView.Content
+            effectiveHidden ? AccessibilityView.Raw : AccessibilityView.Content
         );
+
+        foreach (ILogical logicalChild in ((ILogical)control).LogicalChildren)
+        {
+            if (logicalChild is Control childControl)
+            {
+                bool childEffectiveHidden =
+                    effectiveHidden || childControl.GetValue(s_isExplicitlyHiddenProperty);
+                PropagateSubtreeAccessibilityView(childControl, childEffectiveHidden);
+            }
+        }
     }
 }
 
+internal sealed class SurfaceRpcCache
+{
+    private const int MaxEntries = 256;
+    private readonly Lock _gate = new();
+    private readonly Dictionary<string, (bool HasError, string? Value)> _settled = new(StringComparer.Ordinal);
+    private readonly Queue<string> _fifo = new();
+    private readonly HashSet<string> _inFlight = new(StringComparer.Ordinal);
+
+    public bool TryGetSettled(string key, out bool hasError, out string? value)
+    {
+        lock (this._gate)
+        {
+            if (this._settled.TryGetValue(key, out var entry))
+            {
+                hasError = entry.HasError;
+                value = entry.Value;
+                return true;
+            }
+
+            hasError = false;
+            value = null;
+            return false;
+        }
+    }
+
+    public bool TryMarkInFlight(string key)
+    {
+        lock (this._gate)
+        {
+            return this._inFlight.Add(key);
+        }
+    }
+
+    public void Settle(string key, bool hasError, string? value)
+    {
+        lock (this._gate)
+        {
+            this._inFlight.Remove(key);
+            if (!this._settled.ContainsKey(key))
+            {
+                if (this._fifo.Count >= MaxEntries)
+                {
+                    string oldest = this._fifo.Dequeue();
+                    this._settled.Remove(oldest);
+                }
+
+                this._fifo.Enqueue(key);
+            }
+
+            this._settled[key] = (hasError, value);
+        }
+    }
+
+    public void RemoveInFlight(string key)
+    {
+        lock (this._gate)
+        {
+            this._inFlight.Remove(key);
+        }
+    }
+}
+
+internal sealed record RenderSession(
+    Surface Surface,
+    CatalogRegistry Catalog,
+    IFunctionRegistry? FunctionRegistry,
+    Action<string, string, object?, string?, string?> FireAction,
+    Action<string> OnDataModelChanged,
+    ILogger? Logger = null,
+    CancellationToken SurfaceCancellation = default,
+    RpcHandler? RpcHandler = null,
+    A2UiAvaloniaOptions? Options = null,
+    SurfaceRpcCache? RpcCache = null,
+    Action<Surface>? OnRpcSettled = null,
+    Action<RendererError>? OnRendererError = null
+);
+
 internal sealed class RenderContext(
-    Surface surface,
-    CatalogRegistry catalog,
+    RenderSession session,
     Dictionary<string, Control> cache,
-    IFunctionRegistry? functionRegistry,
-    Action<string, string, object?, string?, string?> fireAction,
-    Action<string> onDataModelChanged,
-    ILogger? logger = null,
-    CancellationToken surfaceCancellation = default,
     string? basePath = null,
     int? collectionIndex = null,
-    RpcHandler? rpcHandler = null,
     HashSet<string>? activeAncestors = null
 ) : IRenderContext
 {
     internal HashSet<string> ActiveAncestors { get; } = activeAncestors ?? [];
-    internal Surface Surface => surface;
-    public ILogger? Logger => logger;
-    public CancellationToken SurfaceCancellation => surfaceCancellation;
+    internal Control? UpdatingContainer { get; set; }
+    internal Surface Surface => session.Surface;
+    public ILogger? Logger => session.Logger;
+    public CancellationToken SurfaceCancellation => session.SurfaceCancellation;
     public int? CollectionIndex => collectionIndex;
-    public RpcHandler? RpcHandler => rpcHandler;
+    public RpcHandler? RpcHandler => session.RpcHandler;
 
     public IRenderContext WithIndex(int index) =>
-        new RenderContext(
-            surface,
-            catalog,
-            cache,
-            functionRegistry,
-            fireAction,
-            onDataModelChanged,
-            logger,
-            surfaceCancellation,
-            basePath,
-            index,
-            rpcHandler,
-            this.ActiveAncestors
-        );
+        new RenderContext(session, cache, basePath, index, this.ActiveAncestors);
 
     private const int MaxResolveDepth = 32;
-    private static readonly JsonSerializerOptions s_jsonOptions = A2UiJsonUtilities.DefaultOptions;
     private static readonly ExpressionParser s_expressionParser = new();
+
+    private JsonSerializerOptions VersionOptions =>
+        session.Surface.ProtocolVersion == A2UiProtocol.Version10
+            ? A2UiJsonUtilities.V10Options
+            : A2UiJsonUtilities.V09Options;
 
     public Control? RenderChild(string? childId)
     {
-        if (childId is null || !surface.Components.TryGetValue(childId, out var c))
+        if (childId is null || !session.Surface.Components.TryGetValue(childId, out var c))
         {
             return null;
         }
 
         if (this.ActiveAncestors.Contains(c.Id))
         {
-            if (logger is not null)
+            if (session.Logger is not null)
             {
-                RendererLog.CyclicReferenceDetected(logger, c.Id, surface.SurfaceId);
+                RendererLog.CyclicReferenceDetected(session.Logger, c.Id, session.Surface.SurfaceId);
             }
 
             return null;
         }
 
         if (
-            surface.ProtocolVersion == A2UiProtocol.Version10
+            session.Surface.ProtocolVersion == A2UiProtocol.Version10
             && !string.IsNullOrEmpty(c.CatalogId)
-            && !catalog.IsKnownCatalog(c.CatalogId)
+            && !session.Catalog.IsKnownCatalog(c.CatalogId)
         )
         {
             throw new A2UiCatalogException(
@@ -278,11 +484,11 @@ internal sealed class RenderContext(
             );
         }
 
-        if (!catalog.TryResolveEntry(surface, c, out var entry))
+        if (!session.Catalog.TryResolveEntry(session.Surface, c, out var entry))
         {
-            if (logger is not null)
+            if (session.Logger is not null)
             {
-                RendererLog.UnknownComponentTypeRendered(logger, c.Id, c.Component);
+                RendererLog.UnknownComponentTypeRendered(session.Logger, c.Id, c.Component);
             }
 
             return null;
@@ -291,14 +497,44 @@ internal sealed class RenderContext(
         this.ActiveAncestors.Add(c.Id);
         try
         {
-            if (cache.TryGetValue(c.Id, out var existing) && entry.Update(existing, c, surface.DataModel, this))
+            if (cache.TryGetValue(c.Id, out var existing))
             {
-                A2UiRenderer.ApplyAccessibility(existing, c, this);
-                DetachFromParent(existing, logger);
-                return existing;
+                Control? previousContainer = this.UpdatingContainer;
+                this.UpdatingContainer = existing;
+                bool updated;
+                try
+                {
+                    updated = entry.Update(existing, c, session.Surface.DataModel, this);
+                }
+                finally
+                {
+                    this.UpdatingContainer = previousContainer;
+                }
+
+                if (updated)
+                {
+                    A2UiRenderer.ApplyAccessibility(existing, c, this);
+                    if (this.UpdatingContainer is null || !IsDirectSlotOf(existing, this.UpdatingContainer))
+                    {
+                        DetachFromParent(existing, session.Logger);
+                    }
+
+                    return existing;
+                }
             }
 
-            var control = entry.Create(c, surface.DataModel, this);
+            Control? previousForCreate = this.UpdatingContainer;
+            this.UpdatingContainer = null;
+            Control control;
+            try
+            {
+                control = entry.Create(c, session.Surface.DataModel, this);
+            }
+            finally
+            {
+                this.UpdatingContainer = previousForCreate;
+            }
+
             A2UiRenderer.ApplyAccessibility(control, c, this);
             cache[c.Id] = control;
             return control;
@@ -307,6 +543,34 @@ internal sealed class RenderContext(
         {
             this.ActiveAncestors.Remove(c.Id);
         }
+    }
+
+    // Slot-wrapper controls (List's ScrollViewer content host, Card's Border/StackPanel host,
+    // Tabs' TabControl/TabItem host) own visual children inside an intermediate wrapper rather than
+    // directly under updatingContainer; recognizing them prevents DetachFromParent during in-place refresh.
+    private static bool IsDirectSlotOf(Control child, Control updatingContainer)
+    {
+        if (ReferenceEquals(child.Parent, updatingContainer))
+        {
+            return true;
+        }
+
+        if (updatingContainer is ScrollViewer sv && ReferenceEquals(child.Parent, sv.Content))
+        {
+            return true;
+        }
+
+        if (updatingContainer is Border { Child: StackPanel cardPanel } && ReferenceEquals(child.Parent, cardPanel))
+        {
+            return true;
+        }
+
+        if (updatingContainer is TabControl && child.Parent is TabItem ti && ReferenceEquals(ti.Parent, updatingContainer))
+        {
+            return true;
+        }
+
+        return false;
     }
 
     /// <summary>
@@ -345,7 +609,7 @@ internal sealed class RenderContext(
     /// </summary>
     public IEnumerable<Control> RenderChildren(string parentId)
     {
-        if (surface.Components.TryGetValue(parentId, out var comp) && comp.Children is not null)
+        if (session.Surface.Components.TryGetValue(parentId, out var comp) && comp.Children is not null)
         {
             if (comp.Children.Ids is { } ids)
             {
@@ -359,8 +623,8 @@ internal sealed class RenderContext(
         }
 
         // Fall back to parent-based lookup
-        return surface
-            .Components.Values.Where(c => c.Parent == parentId)
+        return session
+            .Surface.Components.Values.Where(c => c.Parent == parentId)
             .Select(c => this.RenderChild(c.Id))
             .OfType<Control>();
     }
@@ -373,21 +637,21 @@ internal sealed class RenderContext(
     private List<Control> ExpandTemplate(ChildTemplate tmpl)
     {
         string arrayPath = tmpl.Path.TrimStart('/');
-        int count = surface.DataModel.GetArrayLength(tmpl.Path);
+        int count = session.Surface.DataModel.GetArrayLength(tmpl.Path);
         if (count <= 0)
         {
             return [];
         }
 
-        if (!surface.Components.TryGetValue(tmpl.ComponentId, out var templateComp))
+        if (!session.Surface.Components.TryGetValue(tmpl.ComponentId, out var templateComp))
         {
             return [];
         }
 
         if (
-            surface.ProtocolVersion == A2UiProtocol.Version10
+            session.Surface.ProtocolVersion == A2UiProtocol.Version10
             && !string.IsNullOrEmpty(templateComp.CatalogId)
-            && !catalog.IsKnownCatalog(templateComp.CatalogId)
+            && !session.Catalog.IsKnownCatalog(templateComp.CatalogId)
         )
         {
             throw new A2UiCatalogException(
@@ -395,7 +659,7 @@ internal sealed class RenderContext(
             );
         }
 
-        if (!catalog.TryResolveEntry(surface, templateComp, out var entry))
+        if (!session.Catalog.TryResolveEntry(session.Surface, templateComp, out var entry))
         {
             return [];
         }
@@ -409,49 +673,65 @@ internal sealed class RenderContext(
             // from the same component IDs (e.g. rc_title) don't collide.
             var instanceCache = new Dictionary<string, Control>();
             var scopedContext = new RenderContext(
-                surface,
-                catalog,
+                session,
                 instanceCache,
-                functionRegistry,
-                fireAction,
-                onDataModelChanged,
-                logger,
-                surfaceCancellation,
                 itemBasePath,
                 collectionIndex: i,
-                rpcHandler: rpcHandler,
                 activeAncestors: this.ActiveAncestors
             );
 
-            var control = entry.Create(templateComp, surface.DataModel, scopedContext);
+            var control = entry.Create(templateComp, session.Surface.DataModel, scopedContext);
             A2UiRenderer.ApplyAccessibility(control, templateComp, scopedContext);
             controls.Add(control);
         }
 
-        if (logger is not null)
+        if (session.Logger is not null)
         {
-            RendererLog.TemplateInstantiated(logger, tmpl.ComponentId, templateComp.Component, controls.Count);
+            RendererLog.TemplateInstantiated(session.Logger, tmpl.ComponentId, templateComp.Component, controls.Count);
         }
 
         return controls;
     }
 
     public void FireUserAction(string eventName, object? payload = null, string? componentId = null) =>
-        fireAction(surface.SurfaceId, eventName, payload, componentId, null);
+        session.FireAction(session.Surface.SurfaceId, eventName, payload, componentId, null);
 
     public void FireUserAction(string eventName, object? payload, string? componentId, string? userMessage) =>
-        fireAction(surface.SurfaceId, eventName, payload, componentId, userMessage);
+        session.FireAction(session.Surface.SurfaceId, eventName, payload, componentId, userMessage);
 
-    public string? Resolve(DynamicValue? value)
+    public string? Resolve(DynamicValue? value) =>
+        this.ResolveCore(value, depth: 0, FunctionCallerRole.RendererPropertyBinding, out _);
+
+    public JsonElement? ResolveJsonElement(DynamicValue? value) =>
+        this.ResolveJsonElementCore(value, depth: 0, FunctionCallerRole.RendererPropertyBinding, out _);
+
+    public JsonElement? ResolveJsonElement(DynamicValue? value, FunctionCallerRole callerRole) =>
+        this.ResolveJsonElementCore(value, depth: 0, callerRole, out _);
+
+    internal string? ResolveCheck(DynamicValue? value) =>
+        this.ResolveCore(value, depth: 0, FunctionCallerRole.RendererCheck, out _);
+
+    public void InvokeActionFunction(FunctionCallValue functionCall) =>
+        this.ResolveFunction(functionCall, depth: 0, FunctionCallerRole.RendererAction, out _);
+
+    public void ReportRendererError(RendererError error)
     {
-        using IDisposable versionScope = DynamicValueConverter.EnterVersionScope(
-            surface.ProtocolVersion ?? A2UiProtocol.Version091
-        );
-        return this.ResolveCore(value, depth: 0);
+        if (string.IsNullOrEmpty(error.SurfaceId) && string.IsNullOrEmpty(error.FunctionCallId))
+        {
+            error = error with { SurfaceId = session.Surface.SurfaceId };
+        }
+
+        session.OnRendererError?.Invoke(error);
     }
 
-    private string? ResolveCore(DynamicValue? value, int depth)
+    private JsonElement? ResolveJsonElementCore(
+        DynamicValue? value,
+        int depth,
+        FunctionCallerRole callerRole,
+        out bool hasPendingOrFailedRpc
+    )
     {
+        hasPendingOrFailedRpc = false;
         if (value is null)
         {
             return null;
@@ -459,9 +739,301 @@ internal sealed class RenderContext(
 
         if (depth > MaxResolveDepth)
         {
-            if (logger is not null)
+            if (session.Logger is not null)
             {
-                RendererLog.ResolveExceededMaxDepth(logger, MaxResolveDepth);
+                RendererLog.ResolveExceededMaxDepth(session.Logger, MaxResolveDepth);
+            }
+
+            return null;
+        }
+
+        return value switch
+        {
+            DynamicValue.FunctionValue { Call: var fc } => this.ResolveFunctionToElement(
+                fc,
+                depth,
+                callerRole,
+                out hasPendingOrFailedRpc
+            ),
+            DynamicValue.ArrayValue { Value: var arrayEl } => this.ResolveArrayLiteralToElement(
+                arrayEl,
+                depth,
+                callerRole,
+                out hasPendingOrFailedRpc
+            ),
+            DynamicValue.ObjectValue { Value: var dict } => this.ResolveObjectLiteralToElement(
+                dict,
+                depth,
+                callerRole,
+                out hasPendingOrFailedRpc
+            ),
+            _ => session.Surface.DataModel.ResolveJsonElement(value, basePath),
+        };
+    }
+
+    private JsonElement ResolveFunctionToElement(
+        FunctionCallValue fc,
+        int depth,
+        FunctionCallerRole callerRole,
+        out bool hasPendingOrFailedRpc
+    )
+    {
+        if (fc.Call == "@index")
+        {
+            hasPendingOrFailedRpc = false;
+            int idx = this.EvaluateCollectionIndex(fc, depth);
+            return JsonSerializer.SerializeToElement(idx, A2UiJsonSerializerContext.Default.Int32);
+        }
+
+        string? result = this.ResolveFunction(fc, depth, callerRole, out hasPendingOrFailedRpc);
+        if (result is null)
+        {
+            return DataModel.NullElement;
+        }
+
+        string? returnType = fc.ReturnType;
+        if (returnType is null && session.RpcHandler is not null && session.RpcHandler.TryGetFunction(fc.Call, out var def))
+        {
+            returnType = def.ReturnType;
+        }
+
+        returnType ??= GetBuiltInReturnType(fc.Call);
+
+        if (returnType == "number" && double.TryParse(result, NumberStyles.Float, CultureInfo.InvariantCulture, out double num))
+        {
+            return DataModel.SerializeNumberToElement(num);
+        }
+
+        if (returnType == "boolean" && result is "true" or "false")
+        {
+            return JsonSerializer.SerializeToElement(result == "true", A2UiJsonSerializerContext.Default.Boolean);
+        }
+
+        if (returnType is "array" or "object" or "any" && (result.StartsWith('[') || result.StartsWith('{')))
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(result);
+                return doc.RootElement.Clone();
+            }
+            catch (JsonException)
+            {
+                // Fall back to string representation
+            }
+        }
+
+        return JsonSerializer.SerializeToElement(result, A2UiJsonSerializerContext.Default.String);
+    }
+
+    private static string GetBuiltInReturnType(string call) =>
+        call switch
+        {
+            "add" or "subtract" or "multiply" or "divide" => "number",
+            "equals"
+            or "not_equals"
+            or "greater_than"
+            or "less_than"
+            or "and"
+            or "or"
+            or "not"
+            or "contains"
+            or "starts_with"
+            or "ends_with"
+            or "required"
+            or "email"
+            or "regex"
+            or "length"
+            or "numeric" => "boolean",
+            _ => "string",
+        };
+
+    private JsonElement ResolveArrayLiteralToElement(
+        JsonElement arrayEl,
+        int depth,
+        FunctionCallerRole callerRole,
+        out bool hasPendingOrFailedRpc
+    )
+    {
+        hasPendingOrFailedRpc = false;
+        using var stream = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(stream))
+        {
+            writer.WriteStartArray();
+            foreach (JsonElement item in arrayEl.EnumerateArray())
+            {
+                try
+                {
+                    var itemDv = JsonSerializer.Deserialize<DynamicValue>(item, this.VersionOptions);
+                    JsonElement? resolved = this.ResolveJsonElementCore(
+                        itemDv,
+                        depth + 1,
+                        callerRole,
+                        out bool itemPendingOrFailed
+                    );
+                    hasPendingOrFailedRpc |= itemPendingOrFailed;
+                    if (resolved is { } je)
+                    {
+                        je.WriteTo(writer);
+                    }
+                    else
+                    {
+                        writer.WriteNullValue();
+                    }
+                }
+                catch (JsonException)
+                {
+                    item.WriteTo(writer);
+                }
+            }
+
+            writer.WriteEndArray();
+        }
+
+        using var doc = JsonDocument.Parse(stream.GetBuffer().AsMemory(0, (int)stream.Length));
+        return doc.RootElement.Clone();
+    }
+
+    private JsonElement ResolveObjectLiteralToElement(
+        IReadOnlyDictionary<string, object?> dict,
+        int depth,
+        FunctionCallerRole callerRole,
+        out bool hasPendingOrFailedRpc
+    )
+    {
+        hasPendingOrFailedRpc = false;
+        using var stream = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(stream))
+        {
+            this.WriteResolvedObjectValue(writer, dict, depth + 1, callerRole, out hasPendingOrFailedRpc);
+        }
+
+        using var doc = JsonDocument.Parse(stream.GetBuffer().AsMemory(0, (int)stream.Length));
+        return doc.RootElement.Clone();
+    }
+
+    private void WriteResolvedObjectValue(
+        Utf8JsonWriter writer,
+        object? val,
+        int depth,
+        FunctionCallerRole callerRole,
+        out bool hasPendingOrFailedRpc
+    )
+    {
+        hasPendingOrFailedRpc = false;
+        switch (val)
+        {
+            case null:
+                writer.WriteNullValue();
+                break;
+            case DynamicValue dv:
+                JsonElement? resolved = this.ResolveJsonElementCore(
+                    dv,
+                    depth,
+                    callerRole,
+                    out hasPendingOrFailedRpc
+                );
+                if (resolved is { } je)
+                {
+                    je.WriteTo(writer);
+                }
+                else
+                {
+                    writer.WriteNullValue();
+                }
+
+                break;
+            case IReadOnlyDictionary<string, object?> nestedDict:
+                writer.WriteStartObject();
+                foreach (var (k, v) in nestedDict)
+                {
+                    writer.WritePropertyName(k);
+                    this.WriteResolvedObjectValue(writer, v, depth + 1, callerRole, out bool childPendingOrFailed);
+                    hasPendingOrFailedRpc |= childPendingOrFailed;
+                }
+
+                writer.WriteEndObject();
+                break;
+            case System.Collections.IEnumerable seq when val is not string:
+                writer.WriteStartArray();
+                foreach (var item in seq)
+                {
+                    this.WriteResolvedObjectValue(writer, item, depth + 1, callerRole, out bool itemPendingOrFailed);
+                    hasPendingOrFailedRpc |= itemPendingOrFailed;
+                }
+
+                writer.WriteEndArray();
+                break;
+            default:
+                DataModel.WritePrimitiveOrElementValue(writer, val);
+                break;
+        }
+    }
+
+    private int EvaluateCollectionIndex(FunctionCallValue fc, int depth)
+    {
+        if (collectionIndex is null)
+        {
+            throw new A2UiEvaluationException("@index cannot be called outside a collection template scope.");
+        }
+
+        int offset = 0;
+        if (fc.Args is not null && fc.Args.TryGetValue("offset", out var offsetEl))
+        {
+            if (offsetEl.ValueKind == JsonValueKind.Number && offsetEl.TryGetInt32(out int offVal))
+            {
+                offset = offVal;
+            }
+            else
+            {
+                try
+                {
+                    var offDv = JsonSerializer.Deserialize<DynamicValue>(offsetEl, this.VersionOptions);
+                    string? offResolved = this.ResolveCore(
+                        offDv,
+                        depth + 1,
+                        FunctionCallerRole.RendererPropertyBinding,
+                        out _
+                    );
+                    if (
+                        int.TryParse(
+                            offResolved,
+                            NumberStyles.Integer,
+                            CultureInfo.InvariantCulture,
+                            out int parsedOff
+                        )
+                    )
+                    {
+                        offset = parsedOff;
+                    }
+                }
+                catch (Exception ex) when (ex is not A2UiEvaluationException)
+                {
+                    // default offset 0
+                }
+            }
+        }
+
+        return collectionIndex.Value + offset;
+    }
+
+    private string? ResolveCore(
+        DynamicValue? value,
+        int depth,
+        FunctionCallerRole callerRole,
+        out bool hasPendingOrFailedRpc
+    )
+    {
+        hasPendingOrFailedRpc = false;
+        if (value is null)
+        {
+            return null;
+        }
+
+        if (depth > MaxResolveDepth)
+        {
+            if (session.Logger is not null)
+            {
+                RendererLog.ResolveExceededMaxDepth(session.Logger, MaxResolveDepth);
             }
 
             return null;
@@ -469,7 +1041,7 @@ internal sealed class RenderContext(
 
         if (value is DynamicValue.FunctionValue { Call: var fc })
         {
-            return this.ResolveFunction(fc, depth);
+            return this.ResolveFunction(fc, depth, callerRole, out hasPendingOrFailedRpc);
         }
 
         // ArrayLiteral: resolve each element individually and return as JSON string array.
@@ -477,19 +1049,29 @@ internal sealed class RenderContext(
         // (paths, function calls, etc.) that each need recursive resolution.
         if (value is DynamicValue.ArrayValue { Value: var arrayEl })
         {
-            return this.ResolveArrayLiteral(arrayEl, depth);
+            FunctionCallerRole elementRole =
+                callerRole == FunctionCallerRole.RendererAction
+                    ? FunctionCallerRole.RendererAction
+                    : FunctionCallerRole.RendererPropertyBinding;
+            return this.ResolveArrayLiteral(arrayEl, depth, elementRole, out hasPendingOrFailedRpc);
         }
 
-        return surface.DataModel.Resolve(value, basePath);
+        return session.Surface.DataModel.Resolve(value, basePath);
     }
 
     /// <summary>
     /// Resolve a JSON array of DynamicValues by resolving each element individually.
     /// Returns a JSON string array, e.g. <c>["true","false","true"]</c>, suitable for
-    /// functions like <c>and</c>/<c>or</c> that use <see cref="BuiltInFunctions.ParseJsonStringArray"/>.
+    /// functions like <c>and</c>/<c>or</c>.
     /// </summary>
-    private string? ResolveArrayLiteral(JsonElement arrayEl, int depth)
+    private string? ResolveArrayLiteral(
+        JsonElement arrayEl,
+        int depth,
+        FunctionCallerRole callerRole,
+        out bool hasPendingOrFailedRpc
+    )
     {
+        hasPendingOrFailedRpc = false;
         if (arrayEl.ValueKind != JsonValueKind.Array)
         {
             return null;
@@ -500,15 +1082,16 @@ internal sealed class RenderContext(
         {
             try
             {
-                var itemDv = JsonSerializer.Deserialize<DynamicValue>(item.GetRawText(), s_jsonOptions);
-                string? resolved = this.ResolveCore(itemDv, depth + 1);
+                var itemDv = JsonSerializer.Deserialize<DynamicValue>(item, this.VersionOptions);
+                string? resolved = this.ResolveCore(itemDv, depth + 1, callerRole, out bool itemPendingOrFailed);
+                hasPendingOrFailedRpc |= itemPendingOrFailed;
                 results.Add(resolved ?? "");
             }
             catch (JsonException ex)
             {
-                if (logger is not null)
+                if (session.Logger is not null)
                 {
-                    RendererLog.FailedToDeserializeArrayElement(logger, ex);
+                    RendererLog.FailedToDeserializeArrayElement(session.Logger, ex);
                 }
 
                 results.Add("");
@@ -518,49 +1101,27 @@ internal sealed class RenderContext(
         return JsonSerializer.Serialize(results, A2UiJsonSerializerContext.Default.ListString);
     }
 
-    private string? ResolveFunction(FunctionCallValue fc, int depth)
+    private string? ResolveFunction(
+        FunctionCallValue fc,
+        int depth,
+        FunctionCallerRole callerRole,
+        out bool hasPendingOrFailedRpc
+    )
     {
+        hasPendingOrFailedRpc = false;
+
         // System function: @index
         if (fc.Call == "@index")
         {
-            if (collectionIndex is null)
-            {
-                throw new A2UiEvaluationException("@index cannot be called outside a collection template scope.");
-            }
+            return this.EvaluateCollectionIndex(fc, depth).ToString(CultureInfo.InvariantCulture);
+        }
 
-            int offset = 0;
-            if (fc.Args is not null && fc.Args.TryGetValue("offset", out var offsetEl))
+        if (fc.Call.StartsWith('@'))
+        {
+            throw new A2UiEvaluationException($"Unknown system function '{fc.Call}'.")
             {
-                if (offsetEl.ValueKind == JsonValueKind.Number && offsetEl.TryGetInt32(out int offVal))
-                {
-                    offset = offVal;
-                }
-                else
-                {
-                    try
-                    {
-                        var offDv = JsonSerializer.Deserialize<DynamicValue>(offsetEl.GetRawText(), s_jsonOptions);
-                        string? offResolved = this.ResolveCore(offDv, depth + 1);
-                        if (
-                            int.TryParse(
-                                offResolved,
-                                NumberStyles.Integer,
-                                CultureInfo.InvariantCulture,
-                                out int parsedOff
-                            )
-                        )
-                        {
-                            offset = parsedOff;
-                        }
-                    }
-                    catch (Exception ex) when (ex is not A2UiEvaluationException)
-                    {
-                        // default offset 0
-                    }
-                }
-            }
-
-            return (collectionIndex.Value + offset).ToString(CultureInfo.InvariantCulture);
+                ErrorCode = "EXPRESSION_ERROR",
+            };
         }
 
         // Special case: formatString needs template parsing with resolver access
@@ -569,116 +1130,540 @@ internal sealed class RenderContext(
             return this.ResolveFormatString(fc, depth);
         }
 
-        if (rpcHandler is not null && rpcHandler.TryGetFunction(fc.Call, out var def))
+        FunctionCallerRole argRole =
+            callerRole == FunctionCallerRole.RendererAction
+                ? FunctionCallerRole.RendererAction
+                : FunctionCallerRole.RendererPropertyBinding;
+
+        FunctionDefinition? def = null;
+        if (session.RpcHandler is not null && session.RpcHandler.TryGetFunction(fc.Call, out def))
         {
             if (def.AllowedCallers == AllowedCallers.AgentOnly)
             {
                 throw new A2UiEvaluationException(
                     $"Function '{fc.Call}' cannot be called by renderer (allowedCallers is agentOnly)."
-                );
+                )
+                {
+                    ErrorCode = "EXPRESSION_ERROR",
+                };
+            }
+
+            if (def.RequiresUserActivation && callerRole != FunctionCallerRole.RendererAction)
+            {
+                throw new A2UiEvaluationException(
+                    $"Function '{fc.Call}' requires user activation and cannot be called in a non-action context."
+                )
+                {
+                    ErrorCode = "EXPRESSION_ERROR",
+                };
             }
 
             if (def.Implementation is null)
             {
-                return this.InvokeRpcAgentFunction(fc.Call, fc);
+                return this.RouteToRpcHandler(fc, depth, callerRole, out hasPendingOrFailedRpc);
             }
         }
 
-        if (functionRegistry is not null)
+        if (session.FunctionRegistry?.IsRegistered(fc.Call) == true)
         {
-            var resolvedArgs = new Dictionary<string, string?>();
-            if (fc.Args is not null)
+            if (
+                !this.TryEvaluateStringFunctionArgs(
+                    fc,
+                    depth,
+                    argRole,
+                    out Dictionary<string, string?> resolvedArgs,
+                    out hasPendingOrFailedRpc
+                )
+            )
             {
-                foreach (var (key, jsonEl) in fc.Args)
-                {
-                    try
-                    {
-                        var argValue = JsonSerializer.Deserialize<DynamicValue>(jsonEl.GetRawText(), s_jsonOptions);
-                        resolvedArgs[key] = this.ResolveCore(argValue, depth + 1);
-                    }
-                    catch (JsonException ex)
-                    {
-                        if (logger is not null)
-                        {
-                            RendererLog.FailedToDeserializeFunctionArg(logger, key, fc.Call, ex);
-                        }
-
-                        resolvedArgs[key] = null;
-                    }
-                }
+                return null;
             }
+
+            return session.FunctionRegistry.Evaluate(fc.Call, resolvedArgs, this.CreateEvaluationContext(callerRole));
+        }
+
+        if (def?.Implementation is not null)
+        {
+            if (
+                !this.TryEvaluateStringFunctionArgs(
+                    fc,
+                    depth,
+                    argRole,
+                    out Dictionary<string, string?> resolvedArgs,
+                    out hasPendingOrFailedRpc
+                )
+            )
+            {
+                return null;
+            }
+
+            return def.Implementation(resolvedArgs);
+        }
+
+        if (session.FunctionRegistry is not null and not FunctionRegistry)
+        {
+            if (
+                !this.TryEvaluateStringFunctionArgs(
+                    fc,
+                    depth,
+                    argRole,
+                    out Dictionary<string, string?> resolvedArgs,
+                    out hasPendingOrFailedRpc
+                )
+            )
+            {
+                return null;
+            }
+
+            FunctionEvaluationContext evalContext = this.CreateEvaluationContext(callerRole);
 
             try
             {
-                string? localResult = functionRegistry.Evaluate(fc.Call, resolvedArgs);
-                if (localResult is not null || rpcHandler is null)
+                string? localResult = session.FunctionRegistry.Evaluate(fc.Call, resolvedArgs, evalContext);
+                if (localResult is not null || session.RpcHandler is null)
                 {
+                    if (localResult is null && callerRole == FunctionCallerRole.RendererAction)
+                    {
+                        throw new A2UiEvaluationException($"Unknown action function '{fc.Call}'.")
+                        {
+                            ErrorCode = "EXECUTION_ERROR",
+                        };
+                    }
+
                     return localResult;
                 }
             }
-            catch (A2UiEvaluationException) when (rpcHandler is not null)
+            catch (A2UiEvaluationException) when (session.RpcHandler is not null)
             {
-                // Fall back to RPC handler if local evaluation fails
+                // Fall back to RPC handler if local evaluation fails for custom IFunctionRegistry
             }
         }
 
-        if (rpcHandler is not null)
+        if (session.RpcHandler is not null)
         {
-            return this.InvokeRpcAgentFunction(fc.Call, fc);
+            return this.RouteToRpcHandler(fc, depth, callerRole, out hasPendingOrFailedRpc);
         }
 
-        if (logger is not null)
+        if (callerRole == FunctionCallerRole.RendererAction)
         {
-            RendererLog.NoFunctionRegistryForCall(logger, fc.Call);
+            throw new A2UiEvaluationException($"Unknown action function '{fc.Call}'.")
+            {
+                ErrorCode = "EXECUTION_ERROR",
+            };
+        }
+
+        if (session.Logger is not null)
+        {
+            RendererLog.NoFunctionRegistryForCall(session.Logger, fc.Call);
         }
 
         return null;
     }
 
-    private string? InvokeRpcAgentFunction(string functionName, FunctionCallValue fc)
+    private bool TryEvaluateStringFunctionArgs(
+        FunctionCallValue fc,
+        int depth,
+        FunctionCallerRole argRole,
+        out Dictionary<string, string?> resolvedArgs,
+        out bool hasPendingOrFailedRpc
+    )
     {
-        if (rpcHandler is null)
+        resolvedArgs = this.EvaluateFunctionArgs(
+            fc.Call,
+            fc.Args,
+            argRole,
+            (dv, out pending) => this.ResolveCore(dv, depth + 1, argRole, out pending),
+            fallbackValue: null,
+            out hasPendingOrFailedRpc
+        );
+        return !hasPendingOrFailedRpc;
+    }
+
+    private FunctionEvaluationContext CreateEvaluationContext(FunctionCallerRole callerRole) =>
+        new()
+        {
+            CallerRole = callerRole,
+            UrlLauncher = session.Options?.UrlLauncher,
+            CollectionIndex = collectionIndex,
+            ProtocolVersion = session.Surface.ProtocolVersion,
+        };
+
+    private delegate T ArgValueResolver<out T>(DynamicValue? value, out bool hasPendingOrFailedRpc);
+
+    private Dictionary<string, T> EvaluateFunctionArgs<T>(
+        string functionName,
+        Dictionary<string, JsonElement>? rawArgs,
+        FunctionCallerRole argRole,
+        ArgValueResolver<T> resolveArg,
+        T fallbackValue,
+        out bool hasPendingOrFailedRpc
+    )
+    {
+        hasPendingOrFailedRpc = false;
+        var resolvedArgs = new Dictionary<string, T>();
+        if (rawArgs is null || rawArgs.Count == 0)
+        {
+            return resolvedArgs;
+        }
+
+        foreach (var (key, jsonEl) in rawArgs)
+        {
+            try
+            {
+                var argValue = JsonSerializer.Deserialize<DynamicValue>(jsonEl, this.VersionOptions);
+                resolvedArgs[key] = resolveArg(argValue, out bool argPendingOrFailed);
+                hasPendingOrFailedRpc |= argPendingOrFailed;
+            }
+            catch (JsonException ex)
+            {
+                if (session.Logger is not null)
+                {
+                    RendererLog.FailedToDeserializeFunctionArg(session.Logger, key, functionName, ex);
+                }
+
+                if (argRole == FunctionCallerRole.RendererAction)
+                {
+                    throw;
+                }
+
+                resolvedArgs[key] = fallbackValue;
+            }
+        }
+
+        return resolvedArgs;
+    }
+
+    private string? RouteToRpcHandler(
+        FunctionCallValue fc,
+        int depth,
+        FunctionCallerRole callerRole,
+        out bool hasPendingOrFailedRpc
+    )
+    {
+        hasPendingOrFailedRpc = false;
+
+        if (session.Surface.ProtocolVersion != A2UiProtocol.Version10)
+        {
+            if (callerRole == FunctionCallerRole.RendererAction)
+            {
+                throw new A2UiEvaluationException($"Unknown function '{fc.Call}'.");
+            }
+
+            if (session.Logger is not null)
+            {
+                RendererLog.NoFunctionRegistryForCall(session.Logger, fc.Call);
+            }
+
+            return null;
+        }
+
+        string? resolvedCatalogId = !string.IsNullOrEmpty(fc.CatalogId) ? fc.CatalogId : session.Surface.CatalogId;
+        if (string.IsNullOrEmpty(resolvedCatalogId))
+        {
+            throw new A2UiEvaluationException($"Cannot route agent function '{fc.Call}' without a catalogId.")
+            {
+                ErrorCode = "CATALOG_ERROR",
+            };
+        }
+
+        if (
+            !string.IsNullOrEmpty(fc.CatalogId)
+            && !string.Equals(fc.CatalogId, session.Surface.CatalogId, StringComparison.Ordinal)
+            && !session.Catalog.IsKnownCatalog(fc.CatalogId)
+            && !IsRpcFunctionRegisteredForCatalog(session.RpcHandler, fc.Call, fc.CatalogId)
+        )
+        {
+            throw new A2UiEvaluationException(
+                $"Catalog '{fc.CatalogId}' is not registered for function '{fc.Call}'."
+            )
+            {
+                ErrorCode = "CATALOG_ERROR",
+            };
+        }
+
+        FunctionCallerRole argRole =
+            callerRole == FunctionCallerRole.RendererAction
+                ? FunctionCallerRole.RendererAction
+                : FunctionCallerRole.RendererPropertyBinding;
+
+        Dictionary<string, JsonElement> resolvedArgsElements = this.EvaluateFunctionArgs(
+            fc.Call,
+            fc.Args,
+            argRole,
+            (dv, out pending) =>
+                this.ResolveJsonElementCore(dv, depth + 1, argRole, out pending) ?? DataModel.NullElement,
+            fallbackValue: DataModel.NullElement,
+            out bool argsPendingOrFailed
+        );
+
+        if (argsPendingOrFailed)
+        {
+            hasPendingOrFailedRpc = true;
+            return null;
+        }
+
+        var resolvedFc = new FunctionCallValue
+        {
+            Call = fc.Call,
+            CatalogId = resolvedCatalogId,
+            Args = resolvedArgsElements,
+            ReturnType = fc.ReturnType,
+        };
+
+        return this.InvokeRpcAgentFunction(fc.Call, resolvedFc, callerRole, out hasPendingOrFailedRpc);
+    }
+
+    private static bool IsRpcFunctionRegisteredForCatalog(
+        RpcHandler? handler,
+        string functionName,
+        string catalogId
+    )
+    {
+        if (handler is null)
+        {
+            return false;
+        }
+
+        if (handler.TryGetFunction($"{catalogId}:{functionName}", out _))
+        {
+            return true;
+        }
+
+        return handler.TryGetFunction(functionName, out var def)
+            && (def.CatalogId is null || string.Equals(def.CatalogId, catalogId, StringComparison.Ordinal));
+    }
+
+    private string? InvokeRpcAgentFunction(
+        string functionName,
+        FunctionCallValue resolvedFc,
+        FunctionCallerRole callerRole,
+        out bool hasPendingOrFailedRpc
+    )
+    {
+        hasPendingOrFailedRpc = false;
+        if (session.RpcHandler is null)
         {
             return null;
         }
 
+        string? cacheKey = callerRole == FunctionCallerRole.RendererAction ? null : BuildRpcCacheKey(resolvedFc);
+        if (cacheKey is not null && session.RpcCache is not null)
+        {
+            if (session.RpcCache.TryGetSettled(cacheKey, out bool hasError, out string? cachedValue))
+            {
+                if (hasError)
+                {
+                    hasPendingOrFailedRpc = true;
+                    return null;
+                }
+
+                return cachedValue;
+            }
+
+            if (!session.RpcCache.TryMarkInFlight(cacheKey))
+            {
+                hasPendingOrFailedRpc = true;
+                return null;
+            }
+        }
+
+        Task<FunctionResponse> rpcTask;
         try
         {
-            var response = rpcHandler.InvokeAgentFunctionAsync(surface.SurfaceId, fc, surfaceCancellation)
-                .GetAwaiter()
-                .GetResult();
-
-            if (response.Error is not null)
-            {
-                throw new A2UiEvaluationException(
-                    $"RPC agent function '{functionName}' failed: {response.Error.Message} ({response.Error.Code})"
-                );
-            }
-
-            if (response.Value is { } val)
-            {
-                return val.ValueKind switch
-                {
-                    JsonValueKind.String => val.GetString(),
-                    JsonValueKind.Null => null,
-                    _ => val.GetRawText(),
-                };
-            }
-
-            return null;
+            rpcTask = session.RpcHandler.InvokeAgentFunctionAsync(
+                session.Surface.SurfaceId,
+                resolvedFc,
+                session.SurfaceCancellation
+            );
         }
         catch (OperationCanceledException)
         {
-            throw;
-        }
-        catch (A2UiEvaluationException)
-        {
+            if (cacheKey is not null)
+            {
+                session.RpcCache?.RemoveInFlight(cacheKey);
+            }
+
             throw;
         }
         catch (Exception ex)
         {
+            if (cacheKey is not null)
+            {
+                session.RpcCache?.RemoveInFlight(cacheKey);
+            }
+
             throw new A2UiEvaluationException($"RPC invocation of '{functionName}' failed: {ex.Message}", ex);
         }
+
+        if (rpcTask.IsCompleted)
+        {
+            try
+            {
+                FunctionResponse response = rpcTask.GetAwaiter().GetResult();
+                if (response.Error is not null)
+                {
+                    if (cacheKey is not null)
+                    {
+                        session.RpcCache?.Settle(cacheKey, hasError: true, value: null);
+                    }
+
+                    if (callerRole != FunctionCallerRole.RendererAction)
+                    {
+                        this.ReportRendererError(
+                            new RendererError
+                            {
+                                Code = "EXPRESSION_ERROR",
+                                FunctionCallId = response.FunctionCallId,
+                                Message = response.Error.Message,
+                            }
+                        );
+                    }
+
+                    throw new A2UiEvaluationException(
+                        $"RPC agent function '{functionName}' failed: {response.Error.Message} ({response.Error.Code})",
+                        response.FunctionCallId
+                    )
+                    {
+                        ErrorCode = "EXPRESSION_ERROR",
+                    };
+                }
+
+                string? valStr = ExtractResponseString(response);
+                if (cacheKey is not null)
+                {
+                    session.RpcCache?.Settle(cacheKey, hasError: false, value: valStr);
+                }
+
+                return valStr;
+            }
+            catch (OperationCanceledException)
+            {
+                if (cacheKey is not null)
+                {
+                    session.RpcCache?.RemoveInFlight(cacheKey);
+                }
+
+                throw;
+            }
+            catch (A2UiEvaluationException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                if (cacheKey is not null)
+                {
+                    session.RpcCache?.RemoveInFlight(cacheKey);
+                }
+
+                throw new A2UiEvaluationException($"RPC invocation of '{functionName}' failed: {ex.Message}", ex);
+            }
+        }
+
+        hasPendingOrFailedRpc = true;
+        _ = this.ObserveRpcTaskAsync(rpcTask, cacheKey, callerRole);
+        return null;
+    }
+
+    private async Task ObserveRpcTaskAsync(
+        Task<FunctionResponse> rpcTask,
+        string? cacheKey,
+        FunctionCallerRole callerRole
+    )
+    {
+        try
+        {
+            FunctionResponse response = await rpcTask.ConfigureAwait(false);
+            if (response.Error is not null)
+            {
+                if (cacheKey is not null)
+                {
+                    session.RpcCache?.Settle(cacheKey, hasError: true, value: null);
+                }
+
+                if (!session.SurfaceCancellation.IsCancellationRequested)
+                {
+                    var rendererError = new RendererError
+                    {
+                        Code = "EXPRESSION_ERROR",
+                        FunctionCallId = response.FunctionCallId,
+                        Message = response.Error.Message,
+                    };
+
+                    Dispatcher.UIThread.Post(() =>
+                    {
+                        if (!session.SurfaceCancellation.IsCancellationRequested)
+                        {
+                            this.ReportRendererError(rendererError);
+                            if (callerRole != FunctionCallerRole.RendererAction)
+                            {
+                                session.OnRpcSettled?.Invoke(session.Surface);
+                            }
+                        }
+                    });
+                }
+
+                return;
+            }
+
+            if (cacheKey is not null)
+            {
+                string? valStr = ExtractResponseString(response);
+                session.RpcCache?.Settle(cacheKey, hasError: false, value: valStr);
+            }
+
+            if (
+                !session.SurfaceCancellation.IsCancellationRequested
+                && callerRole != FunctionCallerRole.RendererAction
+                && session.OnRpcSettled is not null
+            )
+            {
+                Dispatcher.UIThread.Post(() =>
+                {
+                    if (!session.SurfaceCancellation.IsCancellationRequested)
+                    {
+                        session.OnRpcSettled(session.Surface);
+                    }
+                });
+            }
+        }
+        catch
+        {
+            if (cacheKey is not null)
+            {
+                session.RpcCache?.RemoveInFlight(cacheKey);
+            }
+        }
+    }
+
+    private static string? ExtractResponseString(FunctionResponse response)
+    {
+        if (response.Value is { } val)
+        {
+            return val.ValueKind switch
+            {
+                JsonValueKind.String => val.GetString(),
+                JsonValueKind.Null => null,
+                _ => val.GetRawText(),
+            };
+        }
+
+        return null;
+    }
+
+    private static string BuildRpcCacheKey(FunctionCallValue fc)
+    {
+        var sb = new StringBuilder();
+        sb.Append(fc.CatalogId ?? string.Empty).Append(':').Append(fc.Call);
+        if (fc.Args is { Count: > 0 })
+        {
+            foreach (var kv in fc.Args.OrderBy(static p => p.Key, StringComparer.Ordinal))
+            {
+                sb.Append('|').Append(kv.Key).Append('=').Append(kv.Value.GetRawText());
+            }
+        }
+
+        return sb.ToString();
     }
 
     /// <summary>
@@ -693,15 +1678,15 @@ internal sealed class RenderContext(
         {
             try
             {
-                var valDv = JsonSerializer.Deserialize<DynamicValue>(valEl.GetRawText(), s_jsonOptions);
+                var valDv = JsonSerializer.Deserialize<DynamicValue>(valEl, this.VersionOptions);
                 // The template is always a string literal like "${formatDate(value: ${/start}, format: 'E, MMM d')}"
                 template = valDv is DynamicValue.StringValue sv ? sv.Value : null;
             }
             catch (JsonException ex)
             {
-                if (logger is not null)
+                if (session.Logger is not null)
                 {
-                    RendererLog.FailedToDeserializeFormatStringArg(logger, ex);
+                    RendererLog.FailedToDeserializeFormatStringArg(session.Logger, ex);
                 }
             }
         }
@@ -728,9 +1713,9 @@ internal sealed class RenderContext(
         }
         catch (A2UiExpressionException ex)
         {
-            if (logger is not null)
+            if (session.Logger is not null)
             {
-                RendererLog.FailedToParseFormatStringTemplate(logger, ex);
+                RendererLog.FailedToParseFormatStringTemplate(session.Logger, ex);
             }
 
             return template;
@@ -744,9 +1729,9 @@ internal sealed class RenderContext(
     {
         if (depth > MaxResolveDepth)
         {
-            if (logger is not null)
+            if (session.Logger is not null)
             {
-                RendererLog.ExpressionTokenExceededMaxDepth(logger, MaxResolveDepth);
+                RendererLog.ExpressionTokenExceededMaxDepth(session.Logger, MaxResolveDepth);
             }
 
             return null;
@@ -769,39 +1754,40 @@ internal sealed class RenderContext(
     /// <see cref="DataModel.Resolve(DynamicValue?, string?)"/>.
     /// </summary>
     private string? ResolveExpressionPath(string path, int depth) =>
-        this.ResolveCore(DynamicValue.FromPath(path), depth);
+        this.ResolveCore(
+            DynamicValue.FromPath(path),
+            depth,
+            FunctionCallerRole.RendererPropertyBinding,
+            out _
+        );
 
     /// <summary>
     /// Resolve a <see cref="FunctionCallToken"/> by resolving each arg token,
-    /// then calling the function registry.
+    /// then calling the local function registry or local implementation without routing to RPC.
     /// </summary>
     private string? ResolveExpressionFunctionCall(FunctionCallToken fc, int depth)
     {
-        if (rpcHandler is not null && rpcHandler.TryGetFunction(fc.Name, out var def))
+        FunctionDefinition? def = null;
+        if (session.RpcHandler is not null && session.RpcHandler.TryGetFunction(fc.Name, out def))
         {
             if (def.AllowedCallers == AllowedCallers.AgentOnly)
             {
                 throw new A2UiEvaluationException(
                     $"Function '{fc.Name}' cannot be called by renderer (allowedCallers is agentOnly)."
-                );
+                )
+                {
+                    ErrorCode = "EXPRESSION_ERROR",
+                };
             }
 
-            if (def.Implementation is null)
+            if (def.RequiresUserActivation)
             {
-                var argsDict = new Dictionary<string, JsonElement>();
-                foreach (var (k, v) in fc.Args)
+                throw new A2UiEvaluationException(
+                    $"Function '{fc.Name}' requires user activation and cannot be called in a non-action context."
+                )
                 {
-                    string? resolvedVal = this.ResolveExpressionToken(v, depth + 1);
-                    argsDict[k] = JsonSerializer.SerializeToElement(resolvedVal, A2UiJsonSerializerContext.Default.String);
-                }
-
-                var fcValue = new FunctionCallValue
-                {
-                    Call = fc.Name,
-                    Args = argsDict,
+                    ErrorCode = "EXPRESSION_ERROR",
                 };
-
-                return this.InvokeRpcAgentFunction(fc.Name, fcValue);
             }
         }
 
@@ -811,53 +1797,62 @@ internal sealed class RenderContext(
             resolvedArgs[key] = this.ResolveExpressionToken(argToken, depth + 1);
         }
 
-        if (functionRegistry is not null)
+        if (session.FunctionRegistry is not null)
         {
-            try
+            FunctionEvaluationContext evalContext = this.CreateEvaluationContext(
+                FunctionCallerRole.RendererPropertyBinding
+            );
+
+            if (session.FunctionRegistry.IsRegistered(fc.Name))
             {
-                string? localResult = functionRegistry.Evaluate(fc.Name, resolvedArgs);
-                if (localResult is not null || rpcHandler is null)
+                return session.FunctionRegistry.Evaluate(fc.Name, resolvedArgs, evalContext);
+            }
+
+            if (session.FunctionRegistry is not FunctionRegistry)
+            {
+                try
                 {
-                    return localResult;
+                    string? localResult = session.FunctionRegistry.Evaluate(fc.Name, resolvedArgs, evalContext);
+                    if (localResult is not null)
+                    {
+                        return localResult;
+                    }
+                }
+                catch (A2UiEvaluationException)
+                {
+                    // Fall through to report unimplemented template expression
                 }
             }
-            catch (A2UiEvaluationException) when (rpcHandler is not null)
-            {
-                // Fall back to RPC handler
-            }
         }
 
-        if (rpcHandler is not null)
+        if (def?.Implementation is not null)
         {
-            var argsDict = new Dictionary<string, JsonElement>();
-            foreach (var (k, v) in resolvedArgs)
-            {
-                argsDict[k] = JsonSerializer.SerializeToElement(v, A2UiJsonSerializerContext.Default.String);
-            }
-
-            var fcValue = new FunctionCallValue
-            {
-                Call = fc.Name,
-                Args = argsDict,
-            };
-
-            return this.InvokeRpcAgentFunction(fc.Name, fcValue);
+            return def.Implementation(resolvedArgs);
         }
 
-        if (logger is not null)
+        if (session.Logger is not null)
         {
-            RendererLog.NoFunctionRegistryForExpression(logger, fc.Name);
+            RendererLog.NoFunctionRegistryForExpression(session.Logger, fc.Name);
         }
+
+        this.ReportRendererError(
+            new RendererError
+            {
+                Code = "EXPRESSION_ERROR",
+                SurfaceId = session.Surface.SurfaceId,
+                Message = $"Unknown function '{fc.Name}' in expression template.",
+            }
+        );
 
         return null;
     }
 
     public double? GetComponentWeight(string componentId) =>
-        surface.Components.TryGetValue(componentId, out var comp) ? comp.Weight : null;
+        session.Surface.Components.TryGetValue(componentId, out var comp) ? comp.Weight : null;
 
     internal bool AreComponentChecksPassing(string componentId)
     {
-        if (surface.Components.TryGetValue(componentId, out var comp))
+        if (session.Surface.Components.TryGetValue(componentId, out var comp))
         {
             return CheckHelper.AllChecksPassing(comp, this);
         }
@@ -867,7 +1862,7 @@ internal sealed class RenderContext(
 
     internal IReadOnlyList<(Control Control, double Weight)> RenderChildrenWithWeights(string parentId)
     {
-        if (surface.Components.TryGetValue(parentId, out var comp) && comp.Children is not null)
+        if (session.Surface.Components.TryGetValue(parentId, out var comp) && comp.Children is not null)
         {
             if (comp.Children.Ids is { } ids)
             {
@@ -892,7 +1887,7 @@ internal sealed class RenderContext(
         }
 
         var legacyList = new List<(Control Control, double Weight)>();
-        foreach (var c in surface.Components.Values.Where(c => c.Parent == parentId))
+        foreach (var c in session.Surface.Components.Values.Where(c => c.Parent == parentId))
         {
             var ctrl = this.RenderChild(c.Id);
             if (ctrl is not null)
@@ -907,24 +1902,30 @@ internal sealed class RenderContext(
 
     public void UpdateDataModel(string path, string? value)
     {
+        JsonElement? element = value is not null
+            ? JsonSerializer.SerializeToElement(value, A2UiJsonSerializerContext.Default.String)
+            : null;
+        this.UpdateDataModel(path, element);
+    }
+
+    public void UpdateDataModel(string path, JsonElement? value)
+    {
         try
         {
             var update = new UpdateDataModel
             {
-                SurfaceId = surface.SurfaceId,
+                SurfaceId = session.Surface.SurfaceId,
                 Path = path,
-                Value = value is not null
-                    ? JsonSerializer.SerializeToElement(value, A2UiJsonSerializerContext.Default.String)
-                    : null,
+                Value = value,
             };
-            surface.DataModel.Apply(update);
-            onDataModelChanged(surface.SurfaceId);
+            session.Surface.DataModel.Apply(update);
+            session.OnDataModelChanged(session.Surface.SurfaceId);
         }
         catch (Exception ex) when (ex is JsonException or InvalidOperationException or ArgumentException)
         {
-            if (logger is not null)
+            if (session.Logger is not null)
             {
-                RendererLog.FailedToUpdateDataModel(logger, path, ex);
+                RendererLog.FailedToUpdateDataModel(session.Logger, path, ex);
             }
         }
     }
@@ -1053,5 +2054,16 @@ internal static partial class RendererLog
         ILogger logger,
         string componentId,
         string surfaceId
+    );
+
+    [LoggerMessage(
+        EventId = 15,
+        Level = LogLevel.Warning,
+        Message = "Failed to evaluate button action for component '{ComponentId}'"
+    )]
+    public static partial void ActionInvocationFailed(
+        ILogger logger,
+        string componentId,
+        Exception exception
     );
 }

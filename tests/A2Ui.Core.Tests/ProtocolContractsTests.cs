@@ -1,8 +1,9 @@
+using System;
 using System.Collections.Generic;
 using System.Text.Json;
 using Blazejewicz.A2Ui.Core.Capabilities;
 
-namespace Blazejewicz.A2Ui.Core.Tests.A2Ui;
+namespace Blazejewicz.A2Ui.Core.Tests;
 
 public sealed class ProtocolContractsTests
 {
@@ -85,5 +86,23 @@ public sealed class ProtocolContractsTests
         var cdm = new ClientDataModel { Surfaces = [] };
 
         Assert.Equal("v0.9", cdm.Version);
+    }
+
+    [Fact]
+    public void A2UiEvaluationException_PropertiesAndConstructorOverload_SetExpectedDefaultsAndValues()
+    {
+        var defaultEx = new A2UiEvaluationException("boom");
+        Assert.Null(defaultEx.FunctionCallId);
+        Assert.Equal("EXECUTION_ERROR", defaultEx.ErrorCode);
+
+        var inner = new InvalidOperationException("bad expr");
+        var richEx = new A2UiEvaluationException("eval failed", "call_42", inner)
+        {
+            ErrorCode = "EXPRESSION_ERROR",
+        };
+        Assert.Equal("eval failed", richEx.Message);
+        Assert.Equal("call_42", richEx.FunctionCallId);
+        Assert.Same(inner, richEx.InnerException);
+        Assert.Equal("EXPRESSION_ERROR", richEx.ErrorCode);
     }
 }

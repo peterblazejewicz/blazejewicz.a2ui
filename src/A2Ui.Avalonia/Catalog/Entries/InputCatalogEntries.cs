@@ -1,3 +1,5 @@
+using System.Globalization;
+using System.Text.Json;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
@@ -5,6 +7,7 @@ using Avalonia.Interactivity;
 using Avalonia.Layout;
 using Blazejewicz.A2Ui.Core;
 using Blazejewicz.A2Ui.Core.Bindings;
+using Blazejewicz.A2Ui.Core.Choices;
 using Blazejewicz.A2Ui.Core.Components;
 using Blazejewicz.A2Ui.Core.Surfaces;
 
@@ -32,6 +35,7 @@ public sealed class TextFieldCatalogEntry : ICatalogEntry
         public string? BindingPath { get; set; } = bindingPath;
         public string ComponentId { get; set; } = componentId;
         public bool IsUpdating { get; set; }
+        public bool IsNotifying { get; set; }
     }
 
     /// <inheritdoc />
@@ -63,7 +67,15 @@ public sealed class TextFieldCatalogEntry : ICatalogEntry
                     return;
                 }
 
-                InputHelper.NotifyValueChanged(s.Context, s.BindingPath, box.Text, s.ComponentId);
+                s.IsNotifying = true;
+                try
+                {
+                    InputHelper.NotifyValueChanged(s.Context, s.BindingPath, box.Text, s.ComponentId);
+                }
+                finally
+                {
+                    s.IsNotifying = false;
+                }
             }
         };
 
@@ -73,6 +85,11 @@ public sealed class TextFieldCatalogEntry : ICatalogEntry
     /// <inheritdoc />
     public bool Update(Control existing, A2UiComponent component, DataModel dataModel, IRenderContext context)
     {
+        if (existing is not StackPanel && component.Checks is { Length: > 0 })
+        {
+            return false;
+        }
+
         var typed = (TextFieldComponent)component;
         // Find the TextBox — either directly cached or inside a check wrapper StackPanel
         TextBox? tb = CheckHelper.FindInner<TextBox>(existing);
@@ -87,11 +104,17 @@ public sealed class TextFieldCatalogEntry : ICatalogEntry
             state.BindingPath = typed.Value.GetBindingPath();
             state.ComponentId = component.Id;
 
-            if (!tb.IsFocused)
+            if (!tb.IsFocused && !state.IsNotifying)
             {
                 state.IsUpdating = true;
-                tb.Text = context.Resolve(typed.Value) ?? string.Empty;
-                state.IsUpdating = false;
+                try
+                {
+                    tb.Text = context.Resolve(typed.Value) ?? string.Empty;
+                }
+                finally
+                {
+                    state.IsUpdating = false;
+                }
             }
         }
         else if (!tb.IsFocused)
@@ -131,6 +154,8 @@ public sealed class DateTimeInputCatalogEntry : ICatalogEntry
         public IRenderContext Context { get; set; } = context;
         public string? BindingPath { get; set; } = bindingPath;
         public string ComponentId { get; set; } = componentId;
+        public bool IsUpdating { get; set; }
+        public bool IsNotifying { get; set; }
     }
 
     /// <inheritdoc />
@@ -203,6 +228,11 @@ public sealed class DateTimeInputCatalogEntry : ICatalogEntry
         // Date + time composite panel
         if (CheckHelper.FindInner<StackPanel>(existing, DateTimeTag) is { } panel)
         {
+            if (ReferenceEquals(existing, panel) && component.Checks is { Length: > 0 })
+            {
+                return false;
+            }
+
             var datePicker = panel.Children.OfType<CalendarDatePicker>().FirstOrDefault();
             var timePicker = panel.Children.OfType<TimePicker>().FirstOrDefault();
             if (datePicker is null || timePicker is null)
@@ -210,22 +240,44 @@ public sealed class DateTimeInputCatalogEntry : ICatalogEntry
                 return false;
             }
 
-            if (datePicker.Tag is DateTimeBindingState s)
+            var dateState = datePicker.Tag as DateTimeBindingState;
+            if (dateState is not null)
             {
-                s.Context = context;
-                s.BindingPath = typed.Value.GetBindingPath();
-                s.ComponentId = component.Id;
+                dateState.Context = context;
+                dateState.BindingPath = typed.Value.GetBindingPath();
+                dateState.ComponentId = component.Id;
             }
 
-            if (!datePicker.IsFocused && raw is not null && DateTime.TryParse(raw, out var dt))
+            if (
+                !datePicker.IsFocused
+                && !timePicker.IsFocused
+                && dateState?.IsNotifying != true
+                && raw is not null
+                && DateTime.TryParse(raw, CultureInfo.InvariantCulture, DateTimeStyles.None, out var dt)
+            )
             {
-                datePicker.SelectedDate = dt.Date;
-                timePicker.SelectedTime = dt.TimeOfDay;
+                if (dateState is not null)
+                {
+                    dateState.IsUpdating = true;
+                }
+
+                try
+                {
+                    datePicker.SelectedDate = dt.Date;
+                    timePicker.SelectedTime = dt.TimeOfDay;
+                }
+                finally
+                {
+                    if (dateState is not null)
+                    {
+                        dateState.IsUpdating = false;
+                    }
+                }
             }
 
             datePicker.PlaceholderText = context.Resolve(component.Label) ?? "Select date";
 
-            if (existing is StackPanel compositeWrapper)
+            if (existing is StackPanel compositeWrapper && !ReferenceEquals(compositeWrapper, panel))
             {
                 CheckHelper.UpdateChecks(compositeWrapper, component, context);
             }
@@ -233,19 +285,45 @@ public sealed class DateTimeInputCatalogEntry : ICatalogEntry
             return true;
         }
 
+        if (existing is not StackPanel && component.Checks is { Length: > 0 })
+        {
+            return false;
+        }
+
         // Time only
         if (CheckHelper.FindInner<TimePicker>(existing) is { } tp)
         {
-            if (tp.Tag is DateTimeBindingState s)
+            var tpState = tp.Tag as DateTimeBindingState;
+            if (tpState is not null)
             {
-                s.Context = context;
-                s.BindingPath = typed.Value.GetBindingPath();
-                s.ComponentId = component.Id;
+                tpState.Context = context;
+                tpState.BindingPath = typed.Value.GetBindingPath();
+                tpState.ComponentId = component.Id;
             }
 
-            if (raw is not null && TimeSpan.TryParse(raw, out var ts))
+            if (
+                !tp.IsFocused
+                && tpState?.IsNotifying != true
+                && raw is not null
+                && TimeSpan.TryParse(raw, CultureInfo.InvariantCulture, out var ts)
+            )
             {
-                tp.SelectedTime = ts;
+                if (tpState is not null)
+                {
+                    tpState.IsUpdating = true;
+                }
+
+                try
+                {
+                    tp.SelectedTime = ts;
+                }
+                finally
+                {
+                    if (tpState is not null)
+                    {
+                        tpState.IsUpdating = false;
+                    }
+                }
             }
 
             if (existing is StackPanel tpWrapper)
@@ -263,17 +341,35 @@ public sealed class DateTimeInputCatalogEntry : ICatalogEntry
             return false;
         }
 
-        if (picker.Tag is DateTimeBindingState dateState)
+        var pickerState = picker.Tag as DateTimeBindingState;
+        if (pickerState is not null)
         {
-            dateState.Context = context;
-            dateState.BindingPath = typed.Value.GetBindingPath();
-            dateState.ComponentId = component.Id;
+            pickerState.Context = context;
+            pickerState.BindingPath = typed.Value.GetBindingPath();
+            pickerState.ComponentId = component.Id;
         }
 
-        if (!picker.IsFocused)
+        if (!picker.IsFocused && pickerState?.IsNotifying != true)
         {
-            picker.SelectedDate =
-                raw is not null && DateOnly.TryParse(raw, out var date) ? date.ToDateTime(TimeOnly.MinValue) : null;
+            if (pickerState is not null)
+            {
+                pickerState.IsUpdating = true;
+            }
+
+            try
+            {
+                picker.SelectedDate =
+                    raw is not null && DateOnly.TryParse(raw, CultureInfo.InvariantCulture, DateTimeStyles.None, out var date)
+                        ? date.ToDateTime(TimeOnly.MinValue)
+                        : null;
+            }
+            finally
+            {
+                if (pickerState is not null)
+                {
+                    pickerState.IsUpdating = false;
+                }
+            }
         }
 
         picker.PlaceholderText = context.Resolve(component.Label) ?? "Select date";
@@ -307,10 +403,18 @@ public sealed class DateTimeInputCatalogEntry : ICatalogEntry
 
         picker.SelectedDateChanged += (_, _) =>
         {
-            if (picker.Tag is DateTimeBindingState s)
+            if (picker.Tag is DateTimeBindingState s && !s.IsUpdating)
             {
-                string? isoDate = picker.SelectedDate?.ToString("yyyy-MM-dd");
-                InputHelper.NotifyValueChanged(s.Context, s.BindingPath, isoDate, s.ComponentId);
+                s.IsNotifying = true;
+                try
+                {
+                    string? isoDate = picker.SelectedDate?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+                    InputHelper.NotifyValueChanged(s.Context, s.BindingPath, isoDate, s.ComponentId);
+                }
+                finally
+                {
+                    s.IsNotifying = false;
+                }
             }
         };
 
@@ -332,7 +436,7 @@ public sealed class DateTimeInputCatalogEntry : ICatalogEntry
         };
         var timePicker = new TimePicker { ClockIdentifier = "24HourClock" };
 
-        if (raw is not null && DateTime.TryParse(raw, out var dt))
+        if (raw is not null && DateTime.TryParse(raw, CultureInfo.InvariantCulture, DateTimeStyles.None, out var dt))
         {
             datePicker.SelectedDate = dt.Date;
             timePicker.SelectedTime = dt.TimeOfDay;
@@ -340,23 +444,34 @@ public sealed class DateTimeInputCatalogEntry : ICatalogEntry
 
         void NotifyCombined()
         {
-            if (datePicker.Tag is not DateTimeBindingState s)
+            if (datePicker.Tag is not DateTimeBindingState s || s.IsUpdating)
             {
                 return;
             }
 
-            var d = datePicker.SelectedDate;
-            var t = timePicker.SelectedTime;
-            if (d is null && t is null)
+            s.IsNotifying = true;
+            try
             {
-                InputHelper.NotifyValueChanged(s.Context, s.BindingPath, null, s.ComponentId);
-                return;
-            }
+                var d = datePicker.SelectedDate;
+                var t = timePicker.SelectedTime;
+                if (d is null && t is null)
+                {
+                    InputHelper.NotifyValueChanged(s.Context, s.BindingPath, null, s.ComponentId);
+                    return;
+                }
 
-            var dateVal = d?.Date ?? DateTime.Today;
-            var timeVal = t ?? TimeSpan.Zero;
-            string iso = new DateTime(dateVal.Ticks + timeVal.Ticks).ToString("yyyy-MM-ddTHH:mm:ss");
-            InputHelper.NotifyValueChanged(s.Context, s.BindingPath, iso, s.ComponentId);
+                var dateVal = d?.Date ?? DateTime.Today;
+                var timeVal = t ?? TimeSpan.Zero;
+                string iso = new DateTime(dateVal.Ticks + timeVal.Ticks).ToString(
+                    "yyyy-MM-ddTHH:mm:ss",
+                    CultureInfo.InvariantCulture
+                );
+                InputHelper.NotifyValueChanged(s.Context, s.BindingPath, iso, s.ComponentId);
+            }
+            finally
+            {
+                s.IsNotifying = false;
+            }
         }
 
         datePicker.SelectedDateChanged += (_, _) => NotifyCombined();
@@ -379,17 +494,25 @@ public sealed class DateTimeInputCatalogEntry : ICatalogEntry
             Tag = new DateTimeBindingState(ctx, bindingPath, componentId),
         };
 
-        if (raw is not null && TimeSpan.TryParse(raw, out var ts))
+        if (raw is not null && TimeSpan.TryParse(raw, CultureInfo.InvariantCulture, out var ts))
         {
             timePicker.SelectedTime = ts;
         }
 
         timePicker.SelectedTimeChanged += (_, _) =>
         {
-            if (timePicker.Tag is DateTimeBindingState s)
+            if (timePicker.Tag is DateTimeBindingState s && !s.IsUpdating)
             {
-                string? isoTime = timePicker.SelectedTime?.ToString(@"hh\:mm\:ss");
-                InputHelper.NotifyValueChanged(s.Context, s.BindingPath, isoTime, s.ComponentId);
+                s.IsNotifying = true;
+                try
+                {
+                    string? isoTime = timePicker.SelectedTime?.ToString(@"hh\:mm\:ss", CultureInfo.InvariantCulture);
+                    InputHelper.NotifyValueChanged(s.Context, s.BindingPath, isoTime, s.ComponentId);
+                }
+                finally
+                {
+                    s.IsNotifying = false;
+                }
             }
         };
 
@@ -411,6 +534,9 @@ public sealed class ChoicePickerCatalogEntry : ICatalogEntry
         public IRenderContext Context { get; set; } = context;
         public string? BindingPath { get; set; } = bindingPath;
         public string ComponentId { get; set; } = componentId;
+        public (string? Label, string Value)[] ResolvedOptions { get; set; } = [];
+        public bool IsUpdating { get; set; }
+        public bool IsNotifying { get; set; }
     }
 
     /// <inheritdoc />
@@ -423,7 +549,7 @@ public sealed class ChoicePickerCatalogEntry : ICatalogEntry
         string? bindingPath = typed.Value.GetBindingPath();
         string componentId = component.Id;
         bool isMultiple = typed.Variant is "multipleSelection";
-        var currentValues = ResolveCurrentValues(typed.Value, context);
+        HashSet<string> currentValues = ResolveCurrentValues(typed.Value, context);
 
         Control control = isMultiple
             ? CreateMultipleSelection(typed, context, bindingPath, componentId, currentValues)
@@ -435,48 +561,28 @@ public sealed class ChoicePickerCatalogEntry : ICatalogEntry
     /// <inheritdoc />
     public bool Update(Control existing, A2UiComponent component, DataModel dataModel, IRenderContext context)
     {
-        var typed = (ChoicePickerComponent)component;
-        // Only support in-place update for the simple ComboBox case (mutuallyExclusive, non-filterable).
-        // Multi-select and filterable variants require full re-create.
-        ComboBox? combo = CheckHelper.FindInner<ComboBox>(existing);
-        if (combo is null)
+        if (existing is not StackPanel && component.Checks is { Length: > 0 })
         {
             return false;
         }
 
-        if (combo.Tag is ChoicePickerBindingState state)
-        {
-            state.Context = context;
-            state.BindingPath = typed.Value.GetBindingPath();
-            state.ComponentId = component.Id;
-        }
+        var typed = (ChoicePickerComponent)component;
+        bool isMultiple = typed.Variant is "multipleSelection";
+        (string? Label, string Value)[] desiredOptions = ResolveOptions(typed.Options, context);
+        HashSet<string> currentValues = ResolveCurrentValues(typed.Value, context);
 
-        combo.PlaceholderText = context.Resolve(component.Label);
-
-        // Synchronize combo.Items with typed.Options
-        combo.Items.Clear();
-        if (typed.Options is { } options)
+        bool updated = (isMultiple, typed.DisplayStyle is "chips", typed.Filterable is true) switch
         {
-            foreach (var opt in options)
-            {
-                combo.Items.Add(
-                    new ComboBoxItem { Content = context.Resolve(opt.Label), Tag = opt.Value }
-                );
-            }
-        }
+            (false, _, true) => UpdateAutoCompleteBox(existing, typed, context, desiredOptions, currentValues),
+            (false, _, false) => UpdateComboBox(existing, typed, context, desiredOptions, currentValues),
+            (true, true, _) => UpdateChipsPanel(existing, typed, context, desiredOptions, currentValues),
+            (true, false, _) => UpdateListBox(existing, typed, context, desiredOptions, currentValues),
+        };
 
-        // Update selected index to match current data model value
-        var currentValues = ResolveCurrentValues(typed.Value, context);
-        int selectedIndex = -1;
-        for (int i = 0; i < combo.Items.Count; i++)
+        if (!updated)
         {
-            if (combo.Items[i] is ComboBoxItem item && item.Tag is string val && currentValues.Contains(val))
-            {
-                selectedIndex = i;
-                break;
-            }
+            return false;
         }
-        combo.SelectedIndex = selectedIndex;
 
         if (existing is StackPanel wrapper)
         {
@@ -484,6 +590,357 @@ public sealed class ChoicePickerCatalogEntry : ICatalogEntry
         }
 
         return true;
+    }
+
+    private static bool UpdateComboBox(
+        Control existing,
+        ChoicePickerComponent typed,
+        IRenderContext context,
+        (string? Label, string Value)[] desiredOptions,
+        HashSet<string> currentValues
+    ) =>
+        UpdateChoicePickerControlCore<ComboBox>(
+            existing,
+            typed,
+            context,
+            desiredOptions,
+            updateMetadata: combo => combo.PlaceholderText = context.Resolve(typed.Label),
+            applyGuardedUpdate: combo =>
+            {
+                if (!ComboItemsMatch(combo, desiredOptions))
+                {
+                    combo.Items.Clear();
+                    foreach ((string? label, string val) in desiredOptions)
+                    {
+                        combo.Items.Add(new ComboBoxItem { Content = label, Tag = val });
+                    }
+                }
+
+                int selectedIndex = -1;
+                for (int i = 0; i < combo.Items.Count; i++)
+                {
+                    if (combo.Items[i] is ComboBoxItem item && item.Tag is string val && currentValues.Contains(val))
+                    {
+                        selectedIndex = i;
+                        break;
+                    }
+                }
+
+                if (combo.SelectedIndex != selectedIndex)
+                {
+                    combo.SelectedIndex = selectedIndex;
+                }
+            }
+        );
+
+    private static bool UpdateAutoCompleteBox(
+        Control existing,
+        ChoicePickerComponent typed,
+        IRenderContext context,
+        (string? Label, string Value)[] desiredOptions,
+        HashSet<string> currentValues
+    ) =>
+        UpdateChoicePickerControlCore<AutoCompleteBox>(
+            existing,
+            typed,
+            context,
+            desiredOptions,
+            updateMetadata: autoComplete => autoComplete.PlaceholderText = context.Resolve(typed.Label),
+            applyGuardedUpdate: autoComplete =>
+            {
+                if (!AutoCompleteItemsMatch(autoComplete, desiredOptions))
+                {
+                    autoComplete.ItemsSource = desiredOptions.Select(o => o.Label ?? string.Empty).ToArray();
+                }
+
+                if (!autoComplete.IsKeyboardFocusWithin)
+                {
+                    string? desiredText = null;
+                    if (currentValues.Count > 0)
+                    {
+                        (string? label, string? matchVal) = desiredOptions.FirstOrDefault(
+                            o => currentValues.Contains(o.Value)
+                        );
+                        if (matchVal is not null)
+                        {
+                            desiredText = label ?? string.Empty;
+                        }
+                    }
+
+                    if (!string.Equals(autoComplete.Text, desiredText, StringComparison.Ordinal))
+                    {
+                        autoComplete.Text = desiredText;
+                    }
+                }
+            }
+        );
+
+    private static bool UpdateChipsPanel(
+        Control existing,
+        ChoicePickerComponent typed,
+        IRenderContext context,
+        (string? Label, string Value)[] desiredOptions,
+        HashSet<string> currentValues
+    ) =>
+        UpdateChoicePickerControlCore<WrapPanel>(
+            existing,
+            typed,
+            context,
+            desiredOptions,
+            updateMetadata: null,
+            applyGuardedUpdate: panel =>
+            {
+                if (!ChipItemsMatch(panel, desiredOptions))
+                {
+                    panel.Children.Clear();
+                    foreach ((string? label, string val) in desiredOptions)
+                    {
+                        var toggle = new ToggleButton
+                        {
+                            Content = label,
+                            Tag = val,
+                            IsChecked = currentValues.Contains(val),
+                            Margin = new Thickness(2),
+                        };
+                        toggle.Classes.Add("chip");
+                        panel.Children.Add(toggle);
+                    }
+                }
+                else
+                {
+                    foreach (ToggleButton toggle in panel.Children.OfType<ToggleButton>())
+                    {
+                        bool shouldCheck = toggle.Tag is string val && currentValues.Contains(val);
+                        if (toggle.IsChecked != shouldCheck)
+                        {
+                            toggle.IsChecked = shouldCheck;
+                        }
+                    }
+                }
+            }
+        );
+
+    private static bool UpdateListBox(
+        Control existing,
+        ChoicePickerComponent typed,
+        IRenderContext context,
+        (string? Label, string Value)[] desiredOptions,
+        HashSet<string> currentValues
+    ) =>
+        UpdateChoicePickerControlCore<ListBox>(
+            existing,
+            typed,
+            context,
+            desiredOptions,
+            updateMetadata: null,
+            applyGuardedUpdate: listBox =>
+            {
+                if (!ListBoxItemsMatch(listBox, desiredOptions))
+                {
+                    listBox.Items.Clear();
+                    foreach ((string? label, string val) in desiredOptions)
+                    {
+                        var item = new ListBoxItem
+                        {
+                            Content = new CheckBox
+                            {
+                                Content = label,
+                                IsChecked = currentValues.Contains(val),
+                            },
+                            Tag = val,
+                        };
+                        listBox.Items.Add(item);
+                    }
+                }
+
+                foreach (ListBoxItem lbi in listBox.Items.OfType<ListBoxItem>())
+                {
+                    bool shouldSelect = lbi.Tag is string val && currentValues.Contains(val);
+                    bool isSelected = listBox.SelectedItems!.Contains(lbi);
+                    if (shouldSelect && !isSelected)
+                    {
+                        listBox.SelectedItems.Add(lbi);
+                    }
+                    else if (!shouldSelect && isSelected)
+                    {
+                        listBox.SelectedItems.Remove(lbi);
+                    }
+
+                    if (lbi.Content is CheckBox cb && cb.IsChecked != shouldSelect)
+                    {
+                        cb.IsChecked = shouldSelect;
+                    }
+                }
+            }
+        );
+
+    private static bool UpdateChoicePickerControlCore<TControl>(
+        Control existing,
+        ChoicePickerComponent typed,
+        IRenderContext context,
+        (string? Label, string Value)[] desiredOptions,
+        Action<TControl>? updateMetadata,
+        Action<TControl> applyGuardedUpdate
+    )
+        where TControl : Control
+    {
+        TControl? control = CheckHelper.FindInner<TControl>(existing);
+        if (control is null)
+        {
+            return false;
+        }
+
+        ChoicePickerBindingState? state = control.Tag as ChoicePickerBindingState;
+        if (state is not null)
+        {
+            state.Context = context;
+            state.BindingPath = typed.Value.GetBindingPath();
+            state.ComponentId = typed.Id;
+            state.ResolvedOptions = desiredOptions;
+        }
+
+        updateMetadata?.Invoke(control);
+
+        // Never mutate picker items or selection while SelectionModel<T>.CommitOperation
+        // is still on the call stack inside SelectionChanged -> DataModelChanged -> Refresh().
+        if (state?.IsNotifying != true)
+        {
+            if (state is not null)
+            {
+                state.IsUpdating = true;
+            }
+
+            try
+            {
+                applyGuardedUpdate(control);
+            }
+            finally
+            {
+                if (state is not null)
+                {
+                    state.IsUpdating = false;
+                }
+            }
+        }
+
+        return true;
+    }
+
+    private static bool ComboItemsMatch(ComboBox combo, (string? Label, string Value)[] desiredOptions)
+    {
+        if (combo.Items.Count != desiredOptions.Length)
+        {
+            return false;
+        }
+
+        for (int i = 0; i < desiredOptions.Length; i++)
+        {
+            if (
+                combo.Items[i] is not ComboBoxItem item
+                || !string.Equals(item.Content as string, desiredOptions[i].Label, StringComparison.Ordinal)
+                || !string.Equals(item.Tag as string, desiredOptions[i].Value, StringComparison.Ordinal)
+            )
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool AutoCompleteItemsMatch(
+        AutoCompleteBox autoComplete,
+        (string? Label, string Value)[] desiredOptions
+    )
+    {
+        if (autoComplete.ItemsSource is not string[] existingLabels || existingLabels.Length != desiredOptions.Length)
+        {
+            return false;
+        }
+
+        for (int i = 0; i < desiredOptions.Length; i++)
+        {
+            if (!string.Equals(existingLabels[i], desiredOptions[i].Label ?? string.Empty, StringComparison.Ordinal))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool ChipItemsMatch(WrapPanel panel, (string? Label, string Value)[] desiredOptions)
+    {
+        if (panel.Children.Count != desiredOptions.Length)
+        {
+            return false;
+        }
+
+        for (int i = 0; i < desiredOptions.Length; i++)
+        {
+            if (
+                panel.Children[i] is not ToggleButton toggle
+                || !string.Equals(toggle.Content as string, desiredOptions[i].Label, StringComparison.Ordinal)
+                || !string.Equals(toggle.Tag as string, desiredOptions[i].Value, StringComparison.Ordinal)
+            )
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool ListBoxItemsMatch(ListBox listBox, (string? Label, string Value)[] desiredOptions)
+    {
+        if (listBox.Items.Count != desiredOptions.Length)
+        {
+            return false;
+        }
+
+        for (int i = 0; i < desiredOptions.Length; i++)
+        {
+            if (
+                listBox.Items[i] is not ListBoxItem item
+                || !string.Equals(item.Tag as string, desiredOptions[i].Value, StringComparison.Ordinal)
+                || item.Content is not CheckBox cb
+                || !string.Equals(cb.Content as string, desiredOptions[i].Label, StringComparison.Ordinal)
+            )
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static (string? Label, string Value)[] ResolveOptions(ChoiceOption[]? options, IRenderContext ctx) =>
+        options is { } opts ? [.. opts.Select(o => (ctx.Resolve(o.Label), o.Value))] : [];
+
+    private static void NotifySelectionChanged(ChoicePickerBindingState s, string[] selected)
+    {
+        if (s.IsUpdating)
+        {
+            return;
+        }
+
+        s.IsNotifying = true;
+        try
+        {
+            JsonElement jsonArray = JsonSerializer.SerializeToElement(
+                selected,
+                A2UiJsonSerializerContext.Default.StringArray
+            );
+            string serialized = JsonSerializer.Serialize(
+                selected,
+                A2UiJsonSerializerContext.Default.StringArray
+            );
+            InputHelper.NotifyValueChanged(s.Context, s.BindingPath, jsonArray, serialized, s.ComponentId);
+        }
+        finally
+        {
+            s.IsNotifying = false;
+        }
     }
 
     private static Control CreateMutuallyExclusive(
@@ -494,74 +951,80 @@ public sealed class ChoicePickerCatalogEntry : ICatalogEntry
         HashSet<string> currentValues
     )
     {
+        (string? Label, string Value)[] resolvedOptions = ResolveOptions(c.Options, ctx);
+        var state = new ChoicePickerBindingState(ctx, bindingPath, componentId)
+        {
+            ResolvedOptions = resolvedOptions,
+        };
+
         if (c.Filterable is true)
         {
             var autoComplete = new AutoCompleteBox
             {
                 PlaceholderText = ctx.Resolve(c.Label),
                 FilterMode = AutoCompleteFilterMode.ContainsOrdinal,
+                Tag = state,
+                ItemsSource = resolvedOptions.Select(o => o.Label ?? string.Empty).ToArray(),
             };
-
-            // Resolve labels once and pair each with its option value so we can map
-            // the user's selected label (AutoCompleteBox exposes SelectedItem as the
-            // string we stored) back to its stable option value.
-            (string ResolvedLabel, string Value)[] resolvedOptions = c.Options is { } opts
-                ? [.. opts.Select(o => (ctx.Resolve(o.Label) ?? string.Empty, o.Value))]
-                : [];
-
-            autoComplete.ItemsSource = resolvedOptions.Select(o => o.ResolvedLabel).ToArray();
 
             // Set initial selected text
             if (currentValues.Count > 0)
             {
-                var match = resolvedOptions.FirstOrDefault(o => currentValues.Contains(o.Value));
-                if (match.Value is not null)
+                (string? label, string? matchVal) = resolvedOptions.FirstOrDefault(
+                    o => currentValues.Contains(o.Value)
+                );
+                if (matchVal is not null)
                 {
-                    autoComplete.Text = match.ResolvedLabel;
+                    autoComplete.Text = label ?? string.Empty;
                 }
             }
 
             autoComplete.SelectionChanged += (_, _) =>
             {
-                string? selectedLabel = autoComplete.SelectedItem as string;
-                string? selectedValue = resolvedOptions.FirstOrDefault(o => o.ResolvedLabel == selectedLabel).Value;
-                if (selectedValue is not null)
+                if (autoComplete.Tag is ChoicePickerBindingState s && !s.IsUpdating)
                 {
-                    InputHelper.NotifyValueChanged(ctx, bindingPath, selectedValue, componentId);
+                    string? selectedLabel = autoComplete.SelectedItem as string;
+                    string? selectedValue = s
+                        .ResolvedOptions.FirstOrDefault(o => (o.Label ?? string.Empty) == selectedLabel)
+                        .Value;
+                    if (selectedValue is not null)
+                    {
+                        NotifySelectionChanged(s, [selectedValue]);
+                    }
                 }
             };
 
             return autoComplete;
         }
 
-        var combo = new ComboBox { PlaceholderText = ctx.Resolve(c.Label) };
-        combo.Tag = new ChoicePickerBindingState(ctx, bindingPath, componentId);
-
-        if (c.Options is { } comboOpts)
+        var combo = new ComboBox
         {
-            int selectedIndex = -1;
-            for (int i = 0; i < comboOpts.Length; i++)
+            PlaceholderText = ctx.Resolve(c.Label),
+            Tag = state,
+        };
+
+        int selectedIndex = -1;
+        for (int i = 0; i < resolvedOptions.Length; i++)
+        {
+            combo.Items.Add(new ComboBoxItem { Content = resolvedOptions[i].Label, Tag = resolvedOptions[i].Value });
+            if (currentValues.Contains(resolvedOptions[i].Value))
             {
-                combo.Items.Add(
-                    new ComboBoxItem { Content = ctx.Resolve(comboOpts[i].Label), Tag = comboOpts[i].Value }
-                );
-                if (currentValues.Contains(comboOpts[i].Value))
-                {
-                    selectedIndex = i;
-                }
+                selectedIndex = i;
             }
-            if (selectedIndex >= 0)
-            {
-                combo.SelectedIndex = selectedIndex;
-            }
+        }
+
+        if (selectedIndex >= 0)
+        {
+            combo.SelectedIndex = selectedIndex;
         }
 
         combo.SelectionChanged += (_, _) =>
         {
-            if (combo.Tag is ChoicePickerBindingState s)
+            if (combo.Tag is ChoicePickerBindingState s && !s.IsUpdating)
             {
                 string? selectedValue = (combo.SelectedItem as ComboBoxItem)?.Tag as string;
-                InputHelper.NotifyValueChanged(s.Context, s.BindingPath, selectedValue, s.ComponentId);
+                string[] selected = selectedValue is not null ? [selectedValue] : [];
+                NotifySelectionChanged(s, selected);
             }
         };
 
@@ -576,25 +1039,33 @@ public sealed class ChoicePickerCatalogEntry : ICatalogEntry
         HashSet<string> currentValues
     )
     {
+        (string? Label, string Value)[] resolvedOptions = ResolveOptions(c.Options, ctx);
+        var state = new ChoicePickerBindingState(ctx, bindingPath, componentId)
+        {
+            ResolvedOptions = resolvedOptions,
+        };
+
         bool useChips = c.DisplayStyle is "chips";
 
         if (useChips)
         {
-            var panel = new WrapPanel { Orientation = Orientation.Horizontal };
-            if (c.Options is { } opts)
+            var panel = new WrapPanel
             {
-                foreach (var opt in opts)
+                Orientation = Orientation.Horizontal,
+                Tag = state,
+            };
+
+            foreach ((string? label, string val) in resolvedOptions)
+            {
+                var toggle = new ToggleButton
                 {
-                    var toggle = new ToggleButton
-                    {
-                        Content = ctx.Resolve(opt.Label),
-                        Tag = opt.Value,
-                        IsChecked = currentValues.Contains(opt.Value),
-                        Margin = new Thickness(2),
-                    };
-                    toggle.Classes.Add("chip");
-                    panel.Children.Add(toggle);
-                }
+                    Content = label,
+                    Tag = val,
+                    IsChecked = currentValues.Contains(val),
+                    Margin = new Thickness(2),
+                };
+                toggle.Classes.Add("chip");
+                panel.Children.Add(toggle);
             }
 
             // Fire on any toggle change
@@ -602,17 +1073,18 @@ public sealed class ChoicePickerCatalogEntry : ICatalogEntry
                 ToggleButton.IsCheckedChangedEvent,
                 (_, _) =>
                 {
-                    var selected = panel
-                        .Children.OfType<ToggleButton>()
-                        .Where(t => t.IsChecked == true)
-                        .Select(t => t.Tag as string)
-                        .OfType<string>()
-                        .ToArray();
-                    string serialized = System.Text.Json.JsonSerializer.Serialize(
-                        selected,
-                        A2UiJsonSerializerContext.Default.StringArray
-                    );
-                    InputHelper.NotifyValueChanged(ctx, bindingPath, serialized, componentId);
+                    if (panel.Tag is ChoicePickerBindingState s && !s.IsUpdating)
+                    {
+                        string[] selected =
+                        [
+                            .. panel
+                                .Children.OfType<ToggleButton>()
+                                .Where(t => t.IsChecked == true)
+                                .Select(t => t.Tag as string)
+                                .OfType<string>(),
+                        ];
+                        NotifySelectionChanged(s, selected);
+                    }
                 },
                 RoutingStrategies.Bubble
             );
@@ -621,30 +1093,31 @@ public sealed class ChoicePickerCatalogEntry : ICatalogEntry
         }
 
         // Default: checkbox-style ListBox
-        var listBox = new ListBox { SelectionMode = SelectionMode.Multiple | SelectionMode.Toggle };
-
-        if (c.Options is { } listOpts)
+        var listBox = new ListBox
         {
-            foreach (var opt in listOpts)
+            SelectionMode = SelectionMode.Multiple | SelectionMode.Toggle,
+            Tag = state,
+        };
+
+        foreach ((string? label, string val) in resolvedOptions)
+        {
+            var item = new ListBoxItem
             {
-                var item = new ListBoxItem
+                Content = new CheckBox
                 {
-                    Content = new CheckBox
-                    {
-                        Content = ctx.Resolve(opt.Label),
-                        IsChecked = currentValues.Contains(opt.Value),
-                    },
-                    Tag = opt.Value,
-                };
-                listBox.Items.Add(item);
-            }
+                    Content = label,
+                    IsChecked = currentValues.Contains(val),
+                },
+                Tag = val,
+            };
+            listBox.Items.Add(item);
         }
 
         // Apply initial selection to ListBox model BEFORE subscribing to SelectionChanged.
         // Avalonia raises SelectionChanged synchronously on every SelectedItems.Add call;
         // subscribing first would fire a phantom valueChanged per pre-selected option on the
         // initial render, echoing the agent's own state back to it before any user interaction.
-        foreach (var item in listBox.Items.OfType<ListBoxItem>())
+        foreach (ListBoxItem item in listBox.Items.OfType<ListBoxItem>())
         {
             if (item.Content is CheckBox cb && cb.IsChecked == true)
             {
@@ -655,25 +1128,35 @@ public sealed class ChoicePickerCatalogEntry : ICatalogEntry
         // SelectionChanged is the source of truth — sync CheckBox visuals from it
         listBox.SelectionChanged += (_, _) =>
         {
-            // Sync CheckBox visuals to match actual selection state
-            foreach (var lbi in listBox.Items.OfType<ListBoxItem>())
+            if (listBox.Tag is not ChoicePickerBindingState s || s.IsUpdating)
             {
-                if (lbi.Content is CheckBox innerCb)
-                {
-                    innerCb.IsChecked = listBox.SelectedItems!.Contains(lbi);
-                }
+                return;
             }
 
-            var selected = listBox
-                .SelectedItems!.OfType<ListBoxItem>()
-                .Select(item => item.Tag as string)
-                .OfType<string>()
-                .ToArray();
-            string serialized = System.Text.Json.JsonSerializer.Serialize(
-                selected,
-                A2UiJsonSerializerContext.Default.StringArray
-            );
-            InputHelper.NotifyValueChanged(ctx, bindingPath, serialized, componentId);
+            s.IsUpdating = true;
+            try
+            {
+                foreach (ListBoxItem lbi in listBox.Items.OfType<ListBoxItem>())
+                {
+                    if (lbi.Content is CheckBox innerCb)
+                    {
+                        innerCb.IsChecked = listBox.SelectedItems!.Contains(lbi);
+                    }
+                }
+            }
+            finally
+            {
+                s.IsUpdating = false;
+            }
+
+            string[] selected =
+            [
+                .. listBox
+                    .SelectedItems!.OfType<ListBoxItem>()
+                    .Select(item => item.Tag as string)
+                    .OfType<string>(),
+            ];
+            NotifySelectionChanged(s, selected);
         };
 
         return listBox;
@@ -694,13 +1177,14 @@ public sealed class ChoicePickerCatalogEntry : ICatalogEntry
         if (value is DynamicValue.ArrayValue { Value: var arr })
         {
             var set = new HashSet<string>();
-            foreach (var el in arr.EnumerateArray())
+            foreach (JsonElement el in arr.EnumerateArray())
             {
-                if (el.ValueKind == System.Text.Json.JsonValueKind.String)
+                if (el.ValueKind == JsonValueKind.String)
                 {
                     set.Add(el.GetString()!);
                 }
             }
+
             return set;
         }
 
@@ -716,13 +1200,13 @@ public sealed class ChoicePickerCatalogEntry : ICatalogEntry
         {
             try
             {
-                var items = System.Text.Json.JsonSerializer.Deserialize(
+                string[]? items = JsonSerializer.Deserialize(
                     resolved,
                     A2UiJsonSerializerContext.Default.StringArray
                 );
                 return items is not null ? [.. items] : [];
             }
-            catch (System.Text.Json.JsonException)
+            catch (JsonException)
             {
                 return [resolved];
             }
@@ -741,6 +1225,7 @@ public sealed class CheckBoxCatalogEntry : ICatalogEntry
         public string? BindingPath { get; set; } = bindingPath;
         public string ComponentId { get; set; } = componentId;
         public bool IsUpdating { get; set; }
+        public bool IsNotifying { get; set; }
     }
 
     /// <inheritdoc />
@@ -767,7 +1252,26 @@ public sealed class CheckBoxCatalogEntry : ICatalogEntry
                     return;
                 }
 
-                InputHelper.NotifyValueChanged(s.Context, s.BindingPath, cb.IsChecked == true ? "true" : "false", s.ComponentId);
+                s.IsNotifying = true;
+                try
+                {
+                    bool checkedVal = box.IsChecked == true;
+                    JsonElement jsonBool = JsonSerializer.SerializeToElement(
+                        checkedVal,
+                        A2UiJsonSerializerContext.Default.Boolean
+                    );
+                    InputHelper.NotifyValueChanged(
+                        s.Context,
+                        s.BindingPath,
+                        jsonBool,
+                        checkedVal ? "true" : "false",
+                        s.ComponentId
+                    );
+                }
+                finally
+                {
+                    s.IsNotifying = false;
+                }
             }
         };
 
@@ -777,6 +1281,11 @@ public sealed class CheckBoxCatalogEntry : ICatalogEntry
     /// <inheritdoc />
     public bool Update(Control existing, A2UiComponent component, DataModel dataModel, IRenderContext context)
     {
+        if (existing is not StackPanel && component.Checks is { Length: > 0 })
+        {
+            return false;
+        }
+
         var typed = (CheckBoxComponent)component;
         CheckBox? cb = CheckHelper.FindInner<CheckBox>(existing);
         if (cb is null)
@@ -790,11 +1299,17 @@ public sealed class CheckBoxCatalogEntry : ICatalogEntry
             state.BindingPath = typed.Value.GetBindingPath();
             state.ComponentId = component.Id;
 
-            if (!cb.IsFocused)
+            if (!cb.IsFocused && !state.IsNotifying)
             {
                 state.IsUpdating = true;
-                cb.IsChecked = context.Resolve(typed.Value) is "true";
-                state.IsUpdating = false;
+                try
+                {
+                    cb.IsChecked = context.Resolve(typed.Value) is "true";
+                }
+                finally
+                {
+                    state.IsUpdating = false;
+                }
             }
         }
         else if (!cb.IsFocused)
@@ -821,6 +1336,8 @@ public sealed class SliderCatalogEntry : ICatalogEntry
         public IRenderContext Context { get; set; } = context;
         public string? BindingPath { get; set; } = bindingPath;
         public string ComponentId { get; set; } = componentId;
+        public bool IsUpdating { get; set; }
+        public bool IsNotifying { get; set; }
     }
 
     /// <inheritdoc />
@@ -830,7 +1347,12 @@ public sealed class SliderCatalogEntry : ICatalogEntry
     public Control Create(A2UiComponent component, DataModel dataModel, IRenderContext context)
     {
         var typed = (SliderComponent)component;
-        double.TryParse(context.Resolve(typed.Value), out double val);
+        double.TryParse(
+            context.Resolve(typed.Value),
+            NumberStyles.Float,
+            CultureInfo.InvariantCulture,
+            out double val
+        );
 
         var slider = new Slider
         {
@@ -844,14 +1366,27 @@ public sealed class SliderCatalogEntry : ICatalogEntry
             Thumb.DragCompletedEvent,
             (_, _) =>
             {
-                if (slider.Tag is SliderBindingState s)
+                if (slider.Tag is SliderBindingState s && !s.IsUpdating)
                 {
-                    InputHelper.NotifyValueChanged(
-                        s.Context,
-                        s.BindingPath,
-                        slider.Value.ToString("G"),
-                        s.ComponentId
-                    );
+                    s.IsNotifying = true;
+                    try
+                    {
+                        JsonElement jsonNum = JsonSerializer.SerializeToElement(
+                            slider.Value,
+                            A2UiJsonSerializerContext.Default.Double
+                        );
+                        InputHelper.NotifyValueChanged(
+                            s.Context,
+                            s.BindingPath,
+                            jsonNum,
+                            slider.Value.ToString("G", CultureInfo.InvariantCulture),
+                            s.ComponentId
+                        );
+                    }
+                    finally
+                    {
+                        s.IsNotifying = false;
+                    }
                 }
             },
             RoutingStrategies.Bubble
@@ -863,6 +1398,11 @@ public sealed class SliderCatalogEntry : ICatalogEntry
     /// <inheritdoc />
     public bool Update(Control existing, A2UiComponent component, DataModel dataModel, IRenderContext context)
     {
+        if (existing is not StackPanel && component.Checks is { Length: > 0 })
+        {
+            return false;
+        }
+
         var typed = (SliderComponent)component;
         Slider? s = CheckHelper.FindInner<Slider>(existing);
         if (s is null)
@@ -870,18 +1410,45 @@ public sealed class SliderCatalogEntry : ICatalogEntry
             return false;
         }
 
-        if (s.Tag is SliderBindingState state)
+        SliderBindingState? state = s.Tag as SliderBindingState;
+        if (state is not null)
         {
             state.Context = context;
             state.BindingPath = typed.Value.GetBindingPath();
             state.ComponentId = component.Id;
         }
 
-        ApplySliderRangeAndTicks(s, typed, context);
-
-        if (!s.IsFocused && double.TryParse(context.Resolve(typed.Value), out double val))
+        if (state?.IsNotifying != true)
         {
-            s.Value = val;
+            if (state is not null)
+            {
+                state.IsUpdating = true;
+            }
+
+            try
+            {
+                ApplySliderRangeAndTicks(s, typed, context);
+
+                if (
+                    !s.IsFocused
+                    && double.TryParse(
+                        context.Resolve(typed.Value),
+                        NumberStyles.Float,
+                        CultureInfo.InvariantCulture,
+                        out double val
+                    )
+                )
+                {
+                    s.Value = val;
+                }
+            }
+            finally
+            {
+                if (state is not null)
+                {
+                    state.IsUpdating = false;
+                }
+            }
         }
 
         if (existing is StackPanel wrapper)
@@ -894,18 +1461,26 @@ public sealed class SliderCatalogEntry : ICatalogEntry
 
     private static void ApplySliderRangeAndTicks(Slider slider, SliderComponent typed, IRenderContext context)
     {
-        double.TryParse(context.Resolve(typed.Min), out double min);
+        double.TryParse(
+            context.Resolve(typed.Min),
+            NumberStyles.Float,
+            CultureInfo.InvariantCulture,
+            out double min
+        );
         double max = 100;
         if (context.Resolve(typed.Max) is { } maxStr)
         {
-            double.TryParse(maxStr, out max);
+            double.TryParse(maxStr, NumberStyles.Float, CultureInfo.InvariantCulture, out max);
         }
 
         slider.Minimum = min;
         slider.Maximum = max;
 
         double? steps = null;
-        if (context.Resolve(typed.Steps) is { } stepsStr && double.TryParse(stepsStr, out double stepsVal))
+        if (
+            context.Resolve(typed.Steps) is { } stepsStr
+            && double.TryParse(stepsStr, NumberStyles.Float, CultureInfo.InvariantCulture, out double stepsVal)
+        )
         {
             steps = stepsVal;
         }

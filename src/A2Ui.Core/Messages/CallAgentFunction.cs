@@ -9,10 +9,9 @@ namespace Blazejewicz.A2Ui.Core.Messages;
 /// </summary>
 public sealed record CallAgentFunction
 {
-    /// <summary>The surface ID where the call originated (optional per v1.0 spec).</summary>
+    /// <summary>The surface ID where the call originated (required per v1.0 spec).</summary>
     [JsonPropertyName("surfaceId")]
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public string? SurfaceId { get; init; }
+    public required string SurfaceId { get; init; }
 
     /// <summary>Unique ID for this instance of the function call.</summary>
     [JsonPropertyName("functionCallId")]
@@ -26,6 +25,11 @@ public sealed record CallAgentFunction
     public void Validate()
     {
         var violations = new List<string>();
+
+        if (string.IsNullOrWhiteSpace(this.SurfaceId))
+        {
+            violations.Add("Missing required 'surfaceId' property");
+        }
 
         if (string.IsNullOrEmpty(this.FunctionCallId))
         {

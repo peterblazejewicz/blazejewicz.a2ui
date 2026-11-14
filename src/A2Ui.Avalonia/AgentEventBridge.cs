@@ -1,12 +1,13 @@
+using System.Collections.Frozen;
 using System.Diagnostics;
 using System.Text.Json;
 using System.Threading.Channels;
 using AGUI.Abstractions;
 using Avalonia.Threading;
 using Blazejewicz.A2Ui.AgUi.Protocol;
-using Blazejewicz.A2Ui.Core;
 using Blazejewicz.A2Ui.Core.Messages;
 using Blazejewicz.A2Ui.Core.Surfaces;
+using Blazejewicz.A2Ui.Core.Versioning;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -19,13 +20,13 @@ namespace Blazejewicz.A2Ui.Avalonia;
 /// </summary>
 public sealed class AgentEventBridge : IDisposable
 {
-    private static readonly HashSet<string> s_a2uiToolNames = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "render_ui",
-        "update_surface",
-    };
-
-    private static readonly JsonSerializerOptions s_jsonOptions = A2UiJsonUtilities.DefaultOptions;
+    private static readonly FrozenSet<string> s_a2uiToolNames = FrozenSet.ToFrozenSet(
+        [
+            "render_ui",
+            "update_surface",
+        ],
+        StringComparer.OrdinalIgnoreCase
+    );
 
     private readonly Channel<BaseEvent> _channel;
     private readonly SurfaceManager _surfaceManager;
@@ -58,15 +59,48 @@ public sealed class AgentEventBridge : IDisposable
     /// <summary>Start processing events on a background task.</summary>
     public void Start()
     {
+        this._cts?.Cancel();
+        this._cts?.Dispose();
         this._cts = new CancellationTokenSource();
-        _ = Task.Run(() => this.ProcessLoopAsync(this._cts.Token));
+        var token = this._cts.Token;
+        _ = Task.Run(() => this.ProcessLoopAsync(token));
     }
 
     /// <summary>Stops the background processing loop by cancelling its token.</summary>
     public void Stop() => this._cts?.Cancel();
 
-    /// <summary>Stops the bridge by cancelling the processing loop.</summary>
-    public void Dispose() => this.Stop();
+    /// <summary>Stops the bridge by cancelling the processing loop and disposing its token source.</summary>
+    public void Dispose()
+    {
+        this.Stop();
+        this._cts?.Dispose();
+        this._cts = null;
+    }
+
+    /// <summary>
+    /// Deterministically waits until all previously written events in the channel have been processed
+    /// by the background loop and posted to the UI dispatcher.
+    /// </summary>
+    /// <param name="ct">Optional cancellation token.</param>
+    public async Task FlushAsync(CancellationToken ct = default)
+    {
+        var loopCts = this._cts;
+        if (loopCts?.IsCancellationRequested != false)
+        {
+            throw new InvalidOperationException("AgentEventBridge is not running.");
+        }
+
+        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct, loopCts.Token);
+        var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await this._channel.Writer.WriteAsync(new FlushSentinelEvent(tcs), linkedCts.Token).ConfigureAwait(false);
+        await tcs.Task.WaitAsync(linkedCts.Token).ConfigureAwait(false);
+    }
+
+    private sealed class FlushSentinelEvent(TaskCompletionSource tcs) : BaseEvent
+    {
+        public override string Type => "__a2ui_flush_sentinel__";
+        public TaskCompletionSource Tcs => tcs;
+    }
 
     // Events surfaced to the app layer
 
@@ -122,6 +156,12 @@ public sealed class AgentEventBridge : IDisposable
         {
             await foreach (var evt in this._channel.Reader.ReadAllAsync(ct).ConfigureAwait(false))
             {
+                if (evt is FlushSentinelEvent flush)
+                {
+                    flush.Tcs.TrySetResult();
+                    continue;
+                }
+
                 eventCount++;
                 string eventType = evt.GetType().Name;
                 BridgeLog.EventDispatched(this._logger, eventType, eventCount);
@@ -215,22 +255,22 @@ public sealed class AgentEventBridge : IDisposable
 
     private void ProcessA2UiPayload(string json, string toolCallId)
     {
-        // A2UI payload is JSONL — one A2UiMessage per line
+        // A2UI payload is JSONL — one message per line (supports v0.9, v0.9.1, and v1.0)
         int messageCount = 0;
         foreach (var line in json.Split('\n', StringSplitOptions.RemoveEmptyEntries))
         {
+            string trimmed = line.Trim();
+            if (trimmed.Length == 0)
+            {
+                continue;
+            }
+
             try
             {
-                var msg = JsonSerializer.Deserialize<A2UiMessage>(line.Trim(), s_jsonOptions);
-                if (msg is not null)
-                {
-                    // Validate on background thread — skip invalid messages
-                    // SurfaceManager.Process() also validates defensively,
-                    // but catching here prevents posting invalid work to UI thread
-                    msg.Validate();
-                    this.PostSafe(() => this._surfaceManager.Process(msg));
-                    messageCount++;
-                }
+                // Parse and validate on the background worker thread before posting to the UI thread
+                InternalOperation op = SurfaceManager.ParseAndAdapt(trimmed);
+                this.PostSafe(() => this._surfaceManager.Process(op));
+                messageCount++;
             }
             catch (JsonException ex)
             {

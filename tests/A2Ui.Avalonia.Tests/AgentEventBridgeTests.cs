@@ -1,6 +1,7 @@
 using AGUI.Abstractions;
 using Avalonia.Headless.XUnit;
 using Avalonia.Threading;
+using Blazejewicz.A2Ui.Core.Bindings;
 using Blazejewicz.A2Ui.Core.Surfaces;
 using Xunit;
 
@@ -9,15 +10,12 @@ namespace Blazejewicz.A2Ui.Avalonia.Tests;
 public sealed class AgentEventBridgeTests
 {
     /// <summary>
-    /// After writing events and before asserting, give the background processing
-    /// loop time to consume from the channel and post to the dispatcher, then
-    /// pump the dispatcher so the posted lambdas execute on the test thread.
+    /// Deterministically flushes the background processing channel and pumps the
+    /// Avalonia UI dispatcher so posted lambdas execute on the test thread.
     /// </summary>
-    private static async Task DrainAndPumpAsync()
+    private static async Task DrainAndPumpAsync(AgentEventBridge bridge)
     {
-        // Allow background task to read from channel and call Dispatcher.Post
-        await Task.Delay(100).ConfigureAwait(true);
-        // Execute all posted dispatcher jobs on the current (UI) thread
+        await bridge.FlushAsync().ConfigureAwait(true);
         Dispatcher.UIThread.RunJobs();
     }
 
@@ -72,7 +70,7 @@ public sealed class AgentEventBridgeTests
             .ConfigureAwait(true);
         await bridge.WriteEventAsync(new ToolCallEndEvent { ToolCallId = "tc-1" }).ConfigureAwait(true);
 
-        await DrainAndPumpAsync().ConfigureAwait(true);
+        await DrainAndPumpAsync(bridge).ConfigureAwait(true);
         bridge.Stop();
 
         Assert.False(surfaceCreated);
@@ -94,7 +92,7 @@ public sealed class AgentEventBridgeTests
         await bridge.WriteEventAsync(new RunStartedEvent { ThreadId = "t-1", RunId = "r-1" }).ConfigureAwait(true);
         await bridge.WriteEventAsync(new RunFinishedEvent { ThreadId = "t-1", RunId = "r-1" }).ConfigureAwait(true);
 
-        await DrainAndPumpAsync().ConfigureAwait(true);
+        await DrainAndPumpAsync(bridge).ConfigureAwait(true);
         bridge.Stop();
 
         Assert.True(started);
@@ -114,7 +112,7 @@ public sealed class AgentEventBridgeTests
 
         await bridge.WriteEventAsync(new RunErrorEvent { Message = "something went wrong" }).ConfigureAwait(true);
 
-        await DrainAndPumpAsync().ConfigureAwait(true);
+        await DrainAndPumpAsync(bridge).ConfigureAwait(true);
         bridge.Stop();
 
         Assert.Equal("something went wrong", errorMessage);
@@ -135,7 +133,7 @@ public sealed class AgentEventBridgeTests
             .WriteEventAsync(new TextMessageContentEvent { MessageId = "msg-1", Delta = "Hello, world!" })
             .ConfigureAwait(true);
 
-        await DrainAndPumpAsync().ConfigureAwait(true);
+        await DrainAndPumpAsync(bridge).ConfigureAwait(true);
         bridge.Stop();
 
         Assert.Equal("Hello, world!", delta);
@@ -169,7 +167,7 @@ public sealed class AgentEventBridgeTests
             .ConfigureAwait(true);
         await bridge.WriteEventAsync(new ToolCallEndEvent { ToolCallId = "tc-e2e" }).ConfigureAwait(true);
 
-        await DrainAndPumpAsync().ConfigureAwait(true);
+        await DrainAndPumpAsync(bridge).ConfigureAwait(true);
         bridge.Stop();
 
         // the bridge should process valid render_ui tool calls
@@ -201,7 +199,7 @@ public sealed class AgentEventBridgeTests
             .ConfigureAwait(true);
         await bridge.WriteEventAsync(new ToolCallEndEvent { ToolCallId = "tc-create" }).ConfigureAwait(true);
 
-        await DrainAndPumpAsync().ConfigureAwait(true);
+        await DrainAndPumpAsync(bridge).ConfigureAwait(true);
 
         // Second tool call: updateComponents (multi-line JSONL)
         const string UpdateJsonl =
@@ -215,7 +213,7 @@ public sealed class AgentEventBridgeTests
             .ConfigureAwait(true);
         await bridge.WriteEventAsync(new ToolCallEndEvent { ToolCallId = "tc-update" }).ConfigureAwait(true);
 
-        await DrainAndPumpAsync().ConfigureAwait(true);
+        await DrainAndPumpAsync(bridge).ConfigureAwait(true);
         bridge.Stop();
 
         var surface = sm.GetSurface("e2e-uc");
@@ -242,7 +240,7 @@ public sealed class AgentEventBridgeTests
             .ConfigureAwait(true);
         await bridge.WriteEventAsync(new ToolCallEndEvent { ToolCallId = "tc-bad" }).ConfigureAwait(true);
 
-        await DrainAndPumpAsync().ConfigureAwait(true);
+        await DrainAndPumpAsync(bridge).ConfigureAwait(true);
 
         // Second tool call: valid payload — bridge should have recovered
         await bridge
@@ -259,10 +257,53 @@ public sealed class AgentEventBridgeTests
             .ConfigureAwait(true);
         await bridge.WriteEventAsync(new ToolCallEndEvent { ToolCallId = "tc-good" }).ConfigureAwait(true);
 
-        await DrainAndPumpAsync().ConfigureAwait(true);
+        await DrainAndPumpAsync(bridge).ConfigureAwait(true);
         bridge.Stop();
 
         // bridge should recover from invalid payloads
         Assert.NotNull(sm.GetSurface("recovered"));
+    }
+
+    [AvaloniaFact]
+    public async Task ProcessLoop_ValidV10RenderUiToolCall_CreatesSurfaceAndComponentsAsync()
+    {
+        var sm = new SurfaceManager();
+        using var bridge = new AgentEventBridge(sm);
+
+        bridge.Start();
+
+        const string V10Jsonl =
+            """{"version":"1.0","createSurface":{"surfaceId":"v10-bridge","catalogId":"https://a2ui.org/specification/v1_0/catalogs/basic/catalog.json","dataModel":{"greeting":"Hello v1.0"},"components":[{"id":"root","component":"Text","text":{"@path":"/greeting"}}]}}""";
+
+        await bridge
+            .WriteEventAsync(new ToolCallStartEvent { ToolCallId = "tc-v10", ToolCallName = "render_ui" })
+            .ConfigureAwait(true);
+        await bridge
+            .WriteEventAsync(new ToolCallArgsEvent { ToolCallId = "tc-v10", Delta = V10Jsonl })
+            .ConfigureAwait(true);
+        await bridge.WriteEventAsync(new ToolCallEndEvent { ToolCallId = "tc-v10" }).ConfigureAwait(true);
+
+        await DrainAndPumpAsync(bridge).ConfigureAwait(true);
+        bridge.Stop();
+
+        var surface = sm.GetSurface("v10-bridge");
+        Assert.NotNull(surface);
+        Assert.Equal("1.0", surface.ProtocolVersion);
+        Assert.Single(surface.Components);
+        Assert.Equal("Hello v1.0", surface.DataModel.Resolve(DynamicValue.FromPath("/greeting")));
+    }
+
+    [AvaloniaFact]
+    public async Task FlushAsync_WhenNotStartedOrAfterDispose_ThrowsInvalidOperationExceptionAsync()
+    {
+        var sm = new SurfaceManager();
+        var bridge = new AgentEventBridge(sm);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => bridge.FlushAsync()).ConfigureAwait(true);
+
+        bridge.Start();
+        bridge.Dispose();
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => bridge.FlushAsync()).ConfigureAwait(true);
     }
 }

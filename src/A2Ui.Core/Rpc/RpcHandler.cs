@@ -1,8 +1,11 @@
 using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
+using System.Globalization;
+using System.Text;
 using System.Text.Json;
 using Blazejewicz.A2Ui.Core.Bindings;
 using Blazejewicz.A2Ui.Core.Components;
+using Blazejewicz.A2Ui.Core.Functions;
 using Blazejewicz.A2Ui.Core.Messages;
 using Blazejewicz.A2Ui.Core.Surfaces;
 
@@ -14,11 +17,15 @@ namespace Blazejewicz.A2Ui.Core.Rpc;
 /// </summary>
 public sealed class RpcHandler : IDisposable
 {
+    private static readonly ExpressionParser s_expressionParser = new();
     private readonly ConcurrentDictionary<string, FunctionDefinition> _functions = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, byte> _registeredCatalogIds = new(StringComparer.Ordinal);
+    private readonly FunctionRegistry _functionRegistry = FunctionRegistry.CreateDefault();
     private readonly ConcurrentDictionary<
         string,
         (string? SurfaceId, TaskCompletionSource<FunctionResponse> Tcs)
     > _pendingAgentCalls = new(StringComparer.Ordinal);
+    private SurfaceManager? _surfaceManager;
     private bool _disposed;
 
     /// <summary>
@@ -32,6 +39,18 @@ public sealed class RpcHandler : IDisposable
     public event Action<RendererToAgentMessage>? MessageOutbound;
 
     /// <summary>
+    /// Registers a known catalog identifier so calls targeting unregistered catalogs can be distinguished from unknown functions.
+    /// </summary>
+    /// <param name="catalogId">The catalog identifier to register.</param>
+    public void RegisterCatalog(string catalogId)
+    {
+        if (!string.IsNullOrEmpty(catalogId))
+        {
+            this._registeredCatalogIds[catalogId] = 0;
+        }
+    }
+
+    /// <summary>
     /// Attempts to retrieve a registered function definition by name.
     /// </summary>
     public bool TryGetFunction(string name, [NotNullWhen(true)] out FunctionDefinition? definition) =>
@@ -41,12 +60,18 @@ public sealed class RpcHandler : IDisposable
     /// Registers a function definition with the RPC handler.
     /// </summary>
     /// <param name="definition">The function definition to register.</param>
-    public void RegisterFunction(FunctionDefinition definition)
+    /// <param name="validateCatalogConstraints">Whether to enforce static catalog schema constraints.</param>
+    public void RegisterFunction(FunctionDefinition definition, bool validateCatalogConstraints = true)
     {
-        definition.Validate();
+        if (validateCatalogConstraints)
+        {
+            definition.Validate();
+        }
+
         this._functions[definition.Name] = definition;
         if (!string.IsNullOrEmpty(definition.CatalogId))
         {
+            this._registeredCatalogIds[definition.CatalogId] = 0;
             this._functions[$"{definition.CatalogId}:{definition.Name}"] = definition;
         }
     }
@@ -64,13 +89,89 @@ public sealed class RpcHandler : IDisposable
     }
 
     /// <summary>
-    /// Attaches this RPC handler to a <see cref="SurfaceManager"/>, automatically cancelling
-    /// pending agent function calls when a surface is deleted.
+    /// Registers all built-in A2UI Basic Catalog functions as local implementations.
+    /// </summary>
+    /// <param name="catalogId">Optional catalog ID to associate with the definitions.</param>
+    public void RegisterBuiltInFunctions(string? catalogId = null)
+    {
+        var registry = FunctionRegistry.CreateDefault();
+        void Reg(string name, string returnType, bool requiresUserActivation = false)
+        {
+            this.RegisterFunction(new FunctionDefinition
+            {
+                Name = name,
+                CatalogId = catalogId,
+                ReturnType = returnType,
+                AllowedCallers = AllowedCallers.RendererOnly,
+                RequiresUserActivation = requiresUserActivation,
+                Implementation = args => registry.Evaluate(name, args),
+            });
+        }
+
+        Reg("capitalize", "string");
+        Reg("formatNumber", "string");
+        Reg("formatCurrency", "string");
+        Reg("formatDate", "string");
+        Reg("pluralize", "string");
+        Reg("add", "number");
+        Reg("subtract", "number");
+        Reg("multiply", "number");
+        Reg("divide", "number");
+        Reg("equals", "boolean");
+        Reg("not_equals", "boolean");
+        Reg("greater_than", "boolean");
+        Reg("less_than", "boolean");
+        Reg("and", "boolean");
+        Reg("or", "boolean");
+        Reg("not", "boolean");
+        Reg("contains", "boolean");
+        Reg("starts_with", "boolean");
+        Reg("ends_with", "boolean");
+        Reg("required", "validationResult");
+        Reg("email", "validationResult");
+        Reg("regex", "validationResult");
+        Reg("length", "validationResult");
+        Reg("numeric", "validationResult");
+        Reg("openUrl", "void", requiresUserActivation: true);
+    }
+
+    /// <summary>
+    /// Attaches this RPC handler to a <see cref="SurfaceManager"/>, wiring surface deletion cancellation,
+    /// inbound <see cref="CallRendererFunction"/> execution, and inbound <see cref="FunctionResponse"/> correlation.
     /// </summary>
     /// <param name="surfaceManager">The surface manager to attach to.</param>
     public void AttachTo(SurfaceManager surfaceManager)
     {
+        ArgumentNullException.ThrowIfNull(surfaceManager);
+        this._surfaceManager = surfaceManager;
         surfaceManager.SurfaceDeleted += (_, e) => this.CancelSurfaceCalls(e.Surface.SurfaceId);
+        surfaceManager.AgentFunctionResponseReceived += (_, op) =>
+            this.HandleAgentFunctionResponse(
+                new FunctionResponse
+                {
+                    FunctionCallId = op.FunctionCallId,
+                    Value = op.Value,
+                    Error = op.Error,
+                }
+            );
+        surfaceManager.CallRendererFunctionReceived += (_, op) =>
+        {
+            var call = new CallRendererFunction
+            {
+                SurfaceId = op.SurfaceId,
+                FunctionCallId = op.FunctionCallId,
+                CallFunction = op.CallFunction,
+            };
+            RendererToAgentMessage response = this.HandleCallRendererFunction(call);
+            this.MessageOutbound?.Invoke(response);
+            if (this.MessageOutboundAsync is { } asyncHandlers)
+            {
+                foreach (Delegate d in asyncHandlers.GetInvocationList())
+                {
+                    _ = ((Func<RendererToAgentMessage, Task>)d)(response);
+                }
+            }
+        };
     }
 
     /// <summary>
@@ -79,16 +180,19 @@ public sealed class RpcHandler : IDisposable
     /// <param name="call">The inbound function call message.</param>
     /// <param name="dataModel">Optional surface data model for resolving dynamic arguments.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
+    /// <param name="userActivationPresent">Whether a user activation gesture context is present.</param>
     /// <returns>A <see cref="RendererToAgentMessage"/> containing the function result or error.</returns>
     public async Task<RendererToAgentMessage> HandleCallRendererFunctionAsync(
         CallRendererFunction call,
         DataModel? dataModel = null,
-        CancellationToken cancellationToken = default
+        CancellationToken cancellationToken = default,
+        bool userActivationPresent = false
     )
     {
         if (!this.TryPrepareRendererFunctionCall(
             call,
             dataModel,
+            userActivationPresent,
             out FunctionDefinition? def,
             out Dictionary<string, string?>? resolvedArgs,
             out RendererToAgentMessage? errorResponse))
@@ -110,18 +214,23 @@ public sealed class RpcHandler : IDisposable
         }
         catch (Exception ex)
         {
-            return CreateErrorResponse(call.FunctionCallId, "FUNCTION_EXECUTION_FAILED", ex.Message);
+            return CreateErrorResponse(call.FunctionCallId, "EXECUTION_ERROR", ex.Message);
         }
     }
 
     /// <summary>
     /// Synchronously handles an incoming <see cref="CallRendererFunction"/> request on the calling thread.
     /// </summary>
-    public RendererToAgentMessage HandleCallRendererFunction(CallRendererFunction call, DataModel? dataModel = null)
+    public RendererToAgentMessage HandleCallRendererFunction(
+        CallRendererFunction call,
+        DataModel? dataModel = null,
+        bool userActivationPresent = false
+    )
     {
         if (!this.TryPrepareRendererFunctionCall(
             call,
             dataModel,
+            userActivationPresent,
             out FunctionDefinition? def,
             out Dictionary<string, string?>? resolvedArgs,
             out RendererToAgentMessage? errorResponse))
@@ -140,13 +249,14 @@ public sealed class RpcHandler : IDisposable
         }
         catch (Exception ex)
         {
-            return CreateErrorResponse(call.FunctionCallId, "FUNCTION_EXECUTION_FAILED", ex.Message);
+            return CreateErrorResponse(call.FunctionCallId, "EXECUTION_ERROR", ex.Message);
         }
     }
 
     private bool TryPrepareRendererFunctionCall(
         CallRendererFunction call,
         DataModel? dataModel,
+        bool userActivationPresent,
         [NotNullWhen(true)] out FunctionDefinition? def,
         [NotNullWhen(true)] out Dictionary<string, string?>? resolvedArgs,
         [NotNullWhen(false)] out RendererToAgentMessage? errorResponse
@@ -156,19 +266,49 @@ public sealed class RpcHandler : IDisposable
         string funcName = call.CallFunction.Call;
         resolvedArgs = null;
         errorResponse = null;
-
         def = null;
+
+        if (!string.IsNullOrEmpty(call.SurfaceId) && this._surfaceManager is not null)
+        {
+            Surface? surface = this._surfaceManager.GetSurface(call.SurfaceId);
+            if (surface is null)
+            {
+                errorResponse = CreateErrorResponse(
+                    call.FunctionCallId,
+                    "INVALID_FUNCTION_CALL",
+                    $"Surface not found: {call.SurfaceId}"
+                );
+                return false;
+            }
+
+            dataModel ??= surface.DataModel;
+        }
+        else if (string.IsNullOrEmpty(call.SurfaceId) && dataModel is null)
+        {
+            dataModel = new DataModel();
+        }
+
         if (!string.IsNullOrEmpty(call.CallFunction.CatalogId))
         {
             this._functions.TryGetValue($"{call.CallFunction.CatalogId}:{funcName}", out def);
+            if (def is null && !this._registeredCatalogIds.IsEmpty && !this._registeredCatalogIds.ContainsKey(call.CallFunction.CatalogId))
+            {
+                errorResponse = CreateErrorResponse(
+                    call.FunctionCallId,
+                    "INVALID_FUNCTION_CALL",
+                    $"Catalog not found: {call.CallFunction.CatalogId}"
+                );
+                return false;
+            }
         }
 
-        if (def is null && !this._functions.TryGetValue(funcName, out def))
+        if (def is null && (!this._functions.TryGetValue(funcName, out def) || (!string.IsNullOrEmpty(def.CatalogId) && !string.IsNullOrEmpty(call.CallFunction.CatalogId) && !string.Equals(def.CatalogId, call.CallFunction.CatalogId, StringComparison.Ordinal))))
         {
+            def = null;
             errorResponse = CreateErrorResponse(
                 call.FunctionCallId,
                 "INVALID_FUNCTION_CALL",
-                $"Function '{funcName}' not found or has no local implementation."
+                $"Function not found: {funcName}"
             );
             return false;
         }
@@ -178,7 +318,7 @@ public sealed class RpcHandler : IDisposable
             errorResponse = CreateErrorResponse(
                 call.FunctionCallId,
                 "INVALID_FUNCTION_CALL",
-                $"Function '{funcName}' not found or has no local implementation."
+                $"Function not found: {funcName}"
             );
             return false;
         }
@@ -188,17 +328,17 @@ public sealed class RpcHandler : IDisposable
             errorResponse = CreateErrorResponse(
                 call.FunctionCallId,
                 "INVALID_FUNCTION_CALL",
-                $"Function '{funcName}' has AllowedCallers set to RendererOnly and cannot be invoked by the agent."
+                $"Function '{funcName}' cannot be called by agent (allowedCallers is rendererOnly)."
             );
             return false;
         }
 
-        if (def.RequiresUserActivation)
+        if (def.RequiresUserActivation && !userActivationPresent)
         {
             errorResponse = CreateErrorResponse(
                 call.FunctionCallId,
                 "INVALID_FUNCTION_CALL",
-                $"Function '{funcName}' requires user activation."
+                $"Function '{funcName}' requires user activation context to execute."
             );
             return false;
         }
@@ -212,12 +352,16 @@ public sealed class RpcHandler : IDisposable
                 {
                     try
                     {
-                        using IDisposable scope = DynamicValueConverter.EnterVersionScope(A2UiProtocol.Version10);
                         DynamicValue? dv = JsonSerializer.Deserialize(
-                            v.GetRawText(),
-                            A2UiJsonSerializerContext.Default.DynamicValue
+                            v,
+                            A2UiJsonUtilities.V10Context.DynamicValue
                         );
-                        resolvedArgs[k] = dataModel.Resolve(dv);
+                        resolvedArgs[k] = this.ResolveArgDynamicValue(dv, dataModel);
+                    }
+                    catch (A2UiEvaluationException ex)
+                    {
+                        errorResponse = CreateErrorResponse(call.FunctionCallId, "EXECUTION_ERROR", ex.Message);
+                        return false;
                     }
                     catch
                     {
@@ -237,6 +381,88 @@ public sealed class RpcHandler : IDisposable
         }
 
         return true;
+    }
+
+    private string? ResolveArgDynamicValue(DynamicValue? dv, DataModel dataModel)
+    {
+        if (dv is null)
+        {
+            return null;
+        }
+
+        if (dv is DynamicValue.FunctionValue fv)
+        {
+            return this.ResolveArgFunctionCall(fv.Call, dataModel);
+        }
+
+        return dataModel.Resolve(dv);
+    }
+
+    private string? ResolveArgFunctionCall(FunctionCallValue fc, DataModel dataModel)
+    {
+        if (fc.Call == "@index")
+        {
+            throw new A2UiEvaluationException("Cannot evaluate @index at root DataContext.");
+        }
+
+        if (fc.Call == "formatString")
+        {
+            string? template = null;
+            if (fc.Args is not null && fc.Args.TryGetValue("value", out JsonElement valEl))
+            {
+                if (valEl.ValueKind == JsonValueKind.String)
+                {
+                    template = valEl.GetString();
+                }
+                else
+                {
+                    DynamicValue? valDv = JsonSerializer.Deserialize(
+                        valEl,
+                        A2UiJsonUtilities.V10Context.DynamicValue
+                    );
+                    template = this.ResolveArgDynamicValue(valDv, dataModel);
+                }
+            }
+
+            if (string.IsNullOrEmpty(template))
+            {
+                return string.Empty;
+            }
+
+            IReadOnlyList<ExpressionToken> tokens = s_expressionParser.Parse(template);
+            var sb = new StringBuilder();
+            foreach (ExpressionToken token in tokens)
+            {
+                string? part = token switch
+                {
+                    LiteralToken lit => lit.Value,
+                    PathToken pt => pt.Path == "@index"
+                        ? throw new A2UiEvaluationException("Cannot evaluate @index at root DataContext.")
+                        : dataModel.Resolve(DynamicValue.FromPath(pt.Path)),
+                    NumberToken nlt => nlt.Value.ToString("G", CultureInfo.InvariantCulture),
+                    BoolToken blt => blt.Value ? "true" : "false",
+                    _ => null,
+                };
+                if (part is not null)
+                {
+                    sb.Append(part);
+                }
+            }
+
+            return sb.ToString();
+        }
+
+        var nestedArgs = new Dictionary<string, string?>(StringComparer.Ordinal);
+        if (fc.Args is not null)
+        {
+            foreach (var (k, v) in fc.Args)
+            {
+                DynamicValue? argDv = JsonSerializer.Deserialize(v, A2UiJsonUtilities.V10Context.DynamicValue);
+                nestedArgs[k] = this.ResolveArgDynamicValue(argDv, dataModel);
+            }
+        }
+
+        return this._functionRegistry.Evaluate(fc.Call, nestedArgs);
     }
 
     private static RendererToAgentMessage CreateSuccessResponse(
@@ -326,9 +552,23 @@ public sealed class RpcHandler : IDisposable
 
         try
         {
-            if (this.MessageOutboundAsync is not null)
+            if (this.MessageOutboundAsync is { } asyncHandlers)
             {
-                await this.MessageOutboundAsync(msg).ConfigureAwait(false);
+                Delegate[] invocationList = asyncHandlers.GetInvocationList();
+                if (invocationList.Length == 1)
+                {
+                    await ((Func<RendererToAgentMessage, Task>)invocationList[0])(msg).ConfigureAwait(false);
+                }
+                else
+                {
+                    var tasks = new Task[invocationList.Length];
+                    for (int i = 0; i < invocationList.Length; i++)
+                    {
+                        tasks[i] = ((Func<RendererToAgentMessage, Task>)invocationList[i])(msg);
+                    }
+
+                    await Task.WhenAll(tasks).ConfigureAwait(false);
+                }
             }
             else
             {

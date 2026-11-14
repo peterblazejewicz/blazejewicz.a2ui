@@ -188,6 +188,8 @@ internal sealed class DataModelCapturingRenderContext(DataModel dm) : IRenderCon
 
     public string? Resolve(DynamicValue? value) => dm.Resolve(value);
 
+    public System.Text.Json.JsonElement? ResolveJsonElement(DynamicValue? value) => dm.ResolveJsonElement(value);
+
     public void UpdateDataModel(string path, string? value)
     {
         var update = new UpdateDataModel
@@ -195,6 +197,17 @@ internal sealed class DataModelCapturingRenderContext(DataModel dm) : IRenderCon
             SurfaceId = "test",
             Path = path,
             Value = value is not null ? System.Text.Json.JsonSerializer.SerializeToElement(value) : null,
+        };
+        dm.Apply(update);
+    }
+
+    public void UpdateDataModel(string path, System.Text.Json.JsonElement? value)
+    {
+        var update = new UpdateDataModel
+        {
+            SurfaceId = "test",
+            Path = path,
+            Value = value,
         };
         dm.Apply(update);
     }

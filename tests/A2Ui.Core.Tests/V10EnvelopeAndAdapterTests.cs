@@ -7,7 +7,7 @@ using Blazejewicz.A2Ui.Core.Messages;
 using Blazejewicz.A2Ui.Core.Surfaces;
 using Blazejewicz.A2Ui.Core.Versioning;
 
-namespace Blazejewicz.A2Ui.Core.Tests.A2Ui;
+namespace Blazejewicz.A2Ui.Core.Tests;
 
 public sealed class V10EnvelopeAndAdapterTests
 {
@@ -347,5 +347,95 @@ public sealed class V10EnvelopeAndAdapterTests
         Assert.NotNull(surface);
         Assert.True(surface.Components.ContainsKey("root"));
         Assert.Equal("42", surface.DataModel.Resolve(DynamicValue.FromPath("/count")));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void CallAgentFunction_Validate_RequiresSurfaceId(string? surfaceId)
+    {
+        var callAgentFunction = new CallAgentFunction
+        {
+            SurfaceId = surfaceId!,
+            FunctionCallId = "call-1",
+            CallFunction = new FunctionCallValue { Call = "pingAgent" },
+        };
+
+        var ex = Assert.Throws<A2UiMessageValidationException>(() => callAgentFunction.Validate());
+        Assert.Contains("surfaceId", ex.Message);
+
+        var envelope = new RendererToAgentMessage
+        {
+            Version = "1.0",
+            CallAgentFunction = callAgentFunction,
+        };
+        var envEx = Assert.Throws<A2UiMessageValidationException>(() => envelope.Validate());
+        Assert.Contains("surfaceId", envEx.Message);
+    }
+
+    [Fact]
+    public void CallAgentFunction_Validate_ValidWithSurfaceId_Succeeds()
+    {
+        var callAgentFunction = new CallAgentFunction
+        {
+            SurfaceId = "surface_123",
+            FunctionCallId = "call-1",
+            CallFunction = new FunctionCallValue { Call = "pingAgent" },
+        };
+
+        callAgentFunction.Validate();
+    }
+
+    [Fact]
+    public void RendererToAgentMessage_CallAgentFunction_JsonRoundTripAndMissingSurfaceIdThrows()
+    {
+        var msg = new RendererToAgentMessage
+        {
+            Version = "1.0",
+            CallAgentFunction = new CallAgentFunction
+            {
+                SurfaceId = "surface_123",
+                FunctionCallId = "call-1",
+                CallFunction = new FunctionCallValue { Call = "pingAgent" },
+            },
+        };
+
+        string json = JsonSerializer.Serialize(msg, s_opts);
+        var deserialized = JsonSerializer.Deserialize<RendererToAgentMessage>(json, s_opts);
+
+        Assert.NotNull(deserialized?.CallAgentFunction);
+        deserialized.Validate();
+        Assert.Equal("surface_123", deserialized.CallAgentFunction.SurfaceId);
+        Assert.Equal("call-1", deserialized.CallAgentFunction.FunctionCallId);
+        Assert.Equal("pingAgent", deserialized.CallAgentFunction.CallFunction.Call);
+
+        const string MissingSurfaceIdJson = """
+            {
+                "version": "1.0",
+                "callAgentFunction": {
+                    "functionCallId": "call-1",
+                    "callFunction": {
+                        "@call": "pingAgent"
+                    }
+                }
+            }
+            """;
+
+        Assert.Throws<JsonException>(() =>
+            JsonSerializer.Deserialize<RendererToAgentMessage>(MissingSurfaceIdJson, s_opts)
+        );
+    }
+
+    [Theory]
+    [InlineData("""{ "deleteSurface": { "surfaceId": "s1" } }""")]
+    [InlineData("""{ "version": 1, "deleteSurface": { "surfaceId": "s1" } }""")]
+    [InlineData("""{ "version": true, "deleteSurface": { "surfaceId": "s1" } }""")]
+    [InlineData("""{ "version": null, "deleteSurface": { "surfaceId": "s1" } }""")]
+    public void V10VersionAdapter_MissingOrNonStringVersion_ThrowsA2UiMessageValidationException(string json)
+    {
+        var adapter = new V10VersionAdapter();
+        var ex = Assert.Throws<A2UiMessageValidationException>(() => adapter.AdaptAgentToRenderer(json));
+        Assert.Contains("expected '1.0'", ex.Message);
     }
 }

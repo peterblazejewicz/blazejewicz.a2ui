@@ -92,7 +92,10 @@ internal sealed class RendererToAgentMessageConverter : JsonConverter<RendererTo
             return null;
         }
 
-        using var scope = DynamicValueConverter.EnterVersionScope(A2UiProtocol.Version10);
+        using IDisposable? scope =
+            A2UiJsonUtilities.GetProtocolVersion(options) is null
+                ? DynamicValueConverter.EnterVersionScope(A2UiProtocol.Version10)
+                : null;
         using var doc = JsonDocument.ParseValue(ref reader);
         var root = doc.RootElement;
 
@@ -136,7 +139,10 @@ internal sealed class RendererToAgentMessageConverter : JsonConverter<RendererTo
 
     public override void Write(Utf8JsonWriter writer, RendererToAgentMessage value, JsonSerializerOptions options)
     {
-        using var scope = DynamicValueConverter.EnterVersionScope(A2UiProtocol.Version10);
+        using IDisposable? scope =
+            A2UiJsonUtilities.GetProtocolVersion(options) is null
+                ? DynamicValueConverter.EnterVersionScope(A2UiProtocol.Version10)
+                : null;
         writer.WriteStartObject();
         writer.WriteString("version", value.Version);
         if (value.Action is not null)

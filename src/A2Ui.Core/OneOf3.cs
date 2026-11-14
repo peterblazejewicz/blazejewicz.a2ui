@@ -8,7 +8,7 @@ namespace Blazejewicz.A2Ui.Core;
 /// <typeparam name="T1">The first possible type.</typeparam>
 /// <typeparam name="T2">The second possible type.</typeparam>
 /// <typeparam name="T3">The third possible type.</typeparam>
-public abstract record OneOf<T1, T2, T3>
+internal abstract record OneOf<T1, T2, T3>
 {
     private OneOf() { }
 

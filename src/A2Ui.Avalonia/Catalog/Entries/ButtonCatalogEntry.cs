@@ -1,6 +1,10 @@
+using System.Text.Json;
 using Avalonia.Controls;
+using Blazejewicz.A2Ui.Core;
 using Blazejewicz.A2Ui.Core.Bindings;
 using Blazejewicz.A2Ui.Core.Components;
+using Blazejewicz.A2Ui.Core.Functions;
+using Blazejewicz.A2Ui.Core.Messages;
 using Blazejewicz.A2Ui.Core.Surfaces;
 
 namespace Blazejewicz.A2Ui.Avalonia.Catalog.Entries;
@@ -21,10 +25,16 @@ public sealed class ButtonCatalogEntry : ICatalogEntry
     public Control Create(A2UiComponent component, DataModel dataModel, IRenderContext context)
     {
         var typed = (ButtonComponent)component;
+        Control? childControl = component.Child is not null ? context.RenderChild(component.Child) : null;
+        if (childControl is not null)
+        {
+            RenderContext.DetachFromParent(childControl);
+        }
+
         var btn = new Button
         {
-            Content = component.Child is not null
-                ? context.RenderChild(component.Child)
+            Content = childControl is not null
+                ? childControl
                 : (object?)(context.Resolve(component.Text) ?? context.Resolve(component.Label) ?? string.Empty),
             Tag = new ButtonActionState(typed, context),
         };
@@ -53,15 +63,78 @@ public sealed class ButtonCatalogEntry : ICatalogEntry
                 return;
             }
 
-            if (s.Component.Action?.Event is { } actionEvent)
+            try
             {
-                object? payload = ResolveContext(actionEvent.Context, s.Context);
-                string? userMessage = s.Context.Resolve(actionEvent.UserMessage);
-                s.Context.FireUserAction(actionEvent.Name, payload, s.Component.Id, userMessage);
+                if (s.Component.Action?.Event is { } actionEvent)
+                {
+                    if (string.IsNullOrEmpty(actionEvent.Name))
+                    {
+                        s.Context.ReportRendererError(
+                            new RendererError
+                            {
+                                Code = "INVALID_ACTION",
+                                Message = "Action event 'name' must be a non-empty string.",
+                            }
+                        );
+                        return;
+                    }
+
+                    string? userMessage = null;
+                    if (actionEvent.UserMessage is not null)
+                    {
+                        JsonElement? userMsgEl = ResolveActionJsonElement(actionEvent.UserMessage, s.Context);
+                        if (userMsgEl is { ValueKind: not (JsonValueKind.String or JsonValueKind.Null) })
+                        {
+                            s.Context.ReportRendererError(
+                                new RendererError
+                                {
+                                    Code = "INVALID_ACTION",
+                                    Message = "Action event 'userMessage' must evaluate to a string.",
+                                }
+                            );
+                            return;
+                        }
+
+                        userMessage = userMsgEl is { ValueKind: JsonValueKind.String } strEl ? strEl.GetString() : null;
+                    }
+
+                    Dictionary<string, JsonElement> payload = ResolveContext(actionEvent.Context, s.Context);
+                    s.Context.FireUserAction(actionEvent.Name, payload, s.Component.Id, userMessage);
+                }
+                else if (s.Component.Action?.FunctionCall is { } fnCall)
+                {
+                    s.Context.InvokeActionFunction(fnCall);
+                }
             }
-            else if (s.Component.Action?.FunctionCall is { } fnCall)
+            catch (Exception ex) when (ex is A2UiEvaluationException or A2UiCatalogException or JsonException)
             {
-                s.Context.Resolve(DynamicValue.FromFunctionCall(fnCall));
+                if (s.Context.Logger is not null)
+                {
+                    RendererLog.ActionInvocationFailed(s.Context.Logger, s.Component.Id, ex);
+                }
+
+                RendererError error = ex switch
+                {
+                    A2UiEvaluationException evalEx when !string.IsNullOrEmpty(evalEx.FunctionCallId) =>
+                        new RendererError
+                        {
+                            Code = "EXPRESSION_ERROR",
+                            FunctionCallId = evalEx.FunctionCallId,
+                            Message = evalEx.Message,
+                        },
+                    A2UiEvaluationException evalEx => new RendererError
+                    {
+                        Code = evalEx.ErrorCode,
+                        Message = evalEx.Message,
+                    },
+                    _ => new RendererError
+                    {
+                        Code = "EXECUTION_ERROR",
+                        Message = ex.Message,
+                    },
+                };
+
+                s.Context.ReportRendererError(error);
             }
         };
 
@@ -89,7 +162,16 @@ public sealed class ButtonCatalogEntry : ICatalogEntry
 
         if (component.Child is not null)
         {
-            btn.Content = context.RenderChild(component.Child);
+            Control? childControl = context.RenderChild(component.Child);
+            if (!ReferenceEquals(btn.Content, childControl))
+            {
+                if (childControl is not null)
+                {
+                    RenderContext.DetachFromParent(childControl);
+                }
+
+                btn.Content = childControl;
+            }
         }
         else
         {
@@ -121,26 +203,44 @@ public sealed class ButtonCatalogEntry : ICatalogEntry
 
     /// <summary>
     /// Resolve the action event context dictionary at invocation time.
-    /// Each value is a DynamicValue that may reference the data model.
+    /// Each value is a <see cref="DynamicValue"/> resolved to its native <see cref="JsonElement"/> representation.
+    /// Always returns a non-null dictionary (empty when no context properties are defined).
     /// </summary>
-    private static Dictionary<string, string?>? ResolveContext(
+    private static Dictionary<string, JsonElement> ResolveContext(
         Dictionary<string, DynamicValue>? contextSpec,
         IRenderContext ctx
     )
     {
         if (contextSpec is null || contextSpec.Count == 0)
         {
-            return null;
+            return [];
         }
 
-        var resolved = new Dictionary<string, string?>(contextSpec.Count);
+        var resolved = new Dictionary<string, JsonElement>(contextSpec.Count, StringComparer.Ordinal);
         foreach (var (key, dynVal) in contextSpec)
         {
-            resolved[key] = ctx.Resolve(dynVal);
+            try
+            {
+                resolved[key] = ResolveActionJsonElement(dynVal, ctx) ?? DataModel.NullElement;
+            }
+            catch (Exception ex) when (ex is A2UiEvaluationException or A2UiCatalogException or JsonException)
+            {
+                throw new A2UiEvaluationException(
+                    $"Action event context entry '{key}' is invalid: {ex.Message}",
+                    (ex as A2UiEvaluationException)?.FunctionCallId,
+                    ex
+                )
+                {
+                    ErrorCode = ex is A2UiEvaluationException evalEx ? evalEx.ErrorCode : "EXPRESSION_ERROR",
+                };
+            }
         }
 
         return resolved;
     }
+
+    private static JsonElement? ResolveActionJsonElement(DynamicValue? value, IRenderContext ctx) =>
+        ctx.ResolveJsonElement(value, FunctionCallerRole.RendererAction);
 
     private static void ApplyVariant(Button btn, string? variant)
     {

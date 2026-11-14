@@ -1,3 +1,5 @@
+using System.Collections.Frozen;
+
 namespace Blazejewicz.A2Ui.Avalonia.Catalog;
 
 /// <summary>
@@ -7,14 +9,25 @@ namespace Blazejewicz.A2Ui.Avalonia.Catalog;
 /// </summary>
 public static class MediaSecurityHelper
 {
-    private static readonly string[] s_allowedSchemes = ["http", "https", "data"];
+    private static readonly FrozenSet<string> s_defaultAllowedSchemes = FrozenSet.ToFrozenSet(
+        ["http", "https", "data"],
+        StringComparer.OrdinalIgnoreCase
+    );
 
     /// <summary>
-    /// Validates whether a media URL is safe according to the A2UI security policy.
+    /// Validates whether a media URL is safe according to the default A2UI security policy.
     /// </summary>
     /// <param name="url">The URL string to evaluate.</param>
     /// <returns><c>true</c> if the URL is safe to load; otherwise <c>false</c>.</returns>
-    public static bool IsSafeMediaUrl(string? url)
+    public static bool IsSafeMediaUrl(string? url) => IsSafeMediaUrl(url, s_defaultAllowedSchemes);
+
+    /// <summary>
+    /// Validates whether a media URL is safe according to the specified allowed URI schemes.
+    /// </summary>
+    /// <param name="url">The URL string to evaluate.</param>
+    /// <param name="allowedSchemes">Optional set of allowed URI schemes. When <see langword="null"/>, uses the default schemes (<c>http</c>, <c>https</c>, <c>data</c>).</param>
+    /// <returns><c>true</c> if the URL is safe to load; otherwise <c>false</c>.</returns>
+    public static bool IsSafeMediaUrl(string? url, IReadOnlySet<string>? allowedSchemes)
     {
         if (string.IsNullOrWhiteSpace(url))
         {
@@ -54,10 +67,12 @@ public static class MediaSecurityHelper
             return false;
         }
 
+        var schemes = allowedSchemes ?? s_defaultAllowedSchemes;
+
         // If it parses as an absolute URI, check against the allowed scheme list
         if (Uri.TryCreate(trimmed, UriKind.Absolute, out Uri? uri))
         {
-            return s_allowedSchemes.Contains(uri.Scheme, StringComparer.OrdinalIgnoreCase);
+            return schemes.Contains(uri.Scheme);
         }
 
         // Reject scheme-like prefixes (colon before first slash/backslash/query) that did not parse as absolute
@@ -85,13 +100,18 @@ public static class MediaSecurityHelper
     /// <summary>
     /// Formats a URL for display, returning "no url" if null or "blocked unsafe url" if unsafe.
     /// </summary>
-    public static string FormatSafeUrl(string? rawUrl)
+    public static string FormatSafeUrl(string? rawUrl) => FormatSafeUrl(rawUrl, s_defaultAllowedSchemes);
+
+    /// <summary>
+    /// Formats a URL for display using the specified allowed URI schemes, returning "no url" if null or "blocked unsafe url" if unsafe.
+    /// </summary>
+    public static string FormatSafeUrl(string? rawUrl, IReadOnlySet<string>? allowedSchemes)
     {
         if (rawUrl is null)
         {
             return "no url";
         }
 
-        return IsSafeMediaUrl(rawUrl) ? rawUrl : "blocked unsafe url";
+        return IsSafeMediaUrl(rawUrl, allowedSchemes) ? rawUrl : "blocked unsafe url";
     }
 }

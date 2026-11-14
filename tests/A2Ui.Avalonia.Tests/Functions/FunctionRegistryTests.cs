@@ -1,4 +1,5 @@
-using Blazejewicz.A2Ui.Avalonia.Functions;
+using Blazejewicz.A2Ui.Core;
+using Blazejewicz.A2Ui.Core.Functions;
 using Xunit;
 
 namespace Blazejewicz.A2Ui.Avalonia.Tests.Functions;
@@ -211,25 +212,54 @@ public sealed class FunctionRegistryTests
 
     [Fact]
     public void And_AllTruthy_ReturnsTrue() =>
-        Assert.Equal("true", this.Eval("and", ("values", """["yes", "1", "true"]""")));
+        Assert.Equal("true", this.Eval("and", ("values", """["TRUE", 1, true]""")));
 
     [Fact]
     public void And_OneFalsy_ReturnsFalse() =>
-        Assert.Equal("false", this.Eval("and", ("values", """["yes", "", "true"]""")));
+        Assert.Equal("false", this.Eval("and", ("values", """["true", "", "true"]""")));
+
+    [Fact]
+    public void And_NonBooleanString_CoercesToFalse() =>
+        Assert.Equal("false", this.Eval("and", ("values", """["yes", "true"]""")));
+
+    [Fact]
+    public void And_FewerThanTwoValues_ThrowsEvaluationException() =>
+        Assert.Throws<A2UiEvaluationException>(() => this.Eval("and", ("values", """["true"]""")));
 
     [Fact]
     public void Or_OneTruthy_ReturnsTrue() =>
-        Assert.Equal("true", this.Eval("or", ("values", """["", "0", "hello"]""")));
+        Assert.Equal("true", this.Eval("or", ("values", """["", "0", "true"]""")));
 
     [Fact]
     public void Or_AllFalsy_ReturnsFalse() =>
-        Assert.Equal("false", this.Eval("or", ("values", """["", "0", "false"]""")));
+        Assert.Equal("false", this.Eval("or", ("values", """["", "0", "false", "yes"]""")));
 
     [Fact]
-    public void Not_Truthy_ReturnsFalse() => Assert.Equal("false", this.Eval("not", ("value", "hello")));
+    public void Or_ValidationResultOperands_CoercesValidMember()
+    {
+        Assert.Equal(
+            "false",
+            this.Eval("or", ("values", """[{"valid":false},{"valid":false,"message":"Required"}]"""))
+        );
+        Assert.Equal(
+            "true",
+            this.Eval("or", ("values", """[{"valid":false},{"valid":true}]"""))
+        );
+    }
+
+    [Fact]
+    public void Not_Truthy_ReturnsFalse() => Assert.Equal("false", this.Eval("not", ("value", "true")));
+
+    [Fact]
+    public void Not_NonTrueString_CoercesToFalseThenInvertsToTrue() =>
+        Assert.Equal("true", this.Eval("not", ("value", "hello")));
 
     [Fact]
     public void Not_Falsy_ReturnsTrue() => Assert.Equal("true", this.Eval("not", ("value", "")));
+
+    [Fact]
+    public void Not_ValidationResult_InvertsValid() =>
+        Assert.Equal("true", this.Eval("not", ("value", """{"valid":false}""")));
 
     // ── String predicates ───────────────────────────────────────────
 
@@ -293,10 +323,92 @@ public sealed class FunctionRegistryTests
     [Fact]
     public void Numeric_NotANumber_ReturnsFalse() => Assert.Equal("false", this.Eval("numeric", ("value", "abc")));
 
+    [Fact]
+    public void Required_EmptyArray_ReturnsFalse() =>
+        Assert.Equal("false", this.Eval("required", ("value", "[]")));
+
+    [Fact]
+    public void Required_NonEmptyArray_ReturnsTrue() =>
+        Assert.Equal("true", this.Eval("required", ("value", "[1, 2]")));
+
+    [Fact]
+    public void Required_EmptyObject_ReturnsTrue() =>
+        Assert.Equal("true", this.Eval("required", ("value", "{}")));
+
+    [Fact]
+    public void Length_ArrayCount_ValidatesElementCount()
+    {
+        Assert.Equal("true", this.Eval("length", ("value", """["a","b","c"]"""), ("min", "2"), ("max", "4")));
+        Assert.Equal("false", this.Eval("length", ("value", """["a"]"""), ("min", "2")));
+    }
+
+    [Fact]
+    public void FormatDate_ImpossibleDate_ReturnsEmpty()
+    {
+        Assert.Equal("", this.Eval("formatDate", ("value", "2026-02-30"), ("format", "yyyy-MM-dd")));
+        Assert.Equal("", this.Eval("formatDate", ("value", "2026-13-01"), ("format", "yyyy-MM-dd")));
+    }
+
+    [Fact]
+    public void FormatDate_KeepsWrittenOffsetWallClock()
+    {
+        Assert.Equal(
+            "2026-09-04 23:30",
+            this.Eval("formatDate", ("value", "2026-09-04T23:30:00-05:00"), ("format", "yyyy-MM-dd HH:mm"))
+        );
+    }
+
+    [Fact]
+    public void FormatDate_ISO_NormalizesToThreeDecimalUtc()
+    {
+        Assert.Equal(
+            "2026-08-26T12:00:00.000Z",
+            this.Eval("formatDate", ("value", "2026-08-26T12:00:00Z"), ("format", "ISO"))
+        );
+    }
+
     // ── Void ────────────────────────────────────────────────────────
 
     [Fact]
     public void OpenUrl_ReturnsNull() => Assert.Null(this.Eval("openUrl", ("url", "https://example.com")));
+
+    [Fact]
+    public void OpenUrl_DisallowedScheme_ThrowsEvaluationException() =>
+        Assert.Throws<A2UiEvaluationException>(() => this.Eval("openUrl", ("url", "javascript:alert(1)")));
+
+    [Fact]
+    public void OpenUrl_InNonActionContext_ThrowsEvaluationException()
+    {
+        var args = new Dictionary<string, string?> { ["url"] = "https://example.com" };
+        var ctx = new FunctionEvaluationContext { CallerRole = FunctionCallerRole.RendererPropertyBinding };
+        Assert.Throws<A2UiEvaluationException>(() => this._registry.Evaluate("openUrl", args, ctx));
+    }
+
+    [Fact]
+    public void OpenUrl_InActionContext_InvokesUrlLauncher()
+    {
+        var launcher = new CapturingUrlLauncher();
+        var args = new Dictionary<string, string?> { ["url"] = "https://example.com/docs" };
+        var ctx = new FunctionEvaluationContext
+        {
+            CallerRole = FunctionCallerRole.RendererAction,
+            UrlLauncher = launcher,
+        };
+
+        Assert.Null(this._registry.Evaluate("openUrl", args, ctx));
+        Assert.Equal("https://example.com/docs", launcher.LastLaunchedUrl);
+    }
+
+    private sealed class CapturingUrlLauncher : IUrlLauncher
+    {
+        public string? LastLaunchedUrl { get; private set; }
+
+        public bool TryLaunchUrl(string url)
+        {
+            this.LastLaunchedUrl = url;
+            return true;
+        }
+    }
 
     // ── Registry behavior ───────────────────────────────────────────
 

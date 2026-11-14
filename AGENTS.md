@@ -17,8 +17,8 @@ Key capabilities:
 
 The repository supports three versions of the A2UI protocol:
 
-* `v0.9`: Baseline JSON specification with single-operation envelopes and `path`/`call` binding objects.
-* `v0.9.1`: Extends `v0.9` with accessibility attributes, checkable components, and list styling.
+* `v0.9`: Baseline JSON specification with single-operation envelopes, `path`/`call` binding objects, `AccessibilityAttributes`, and `Checkable` validation rules.
+* `v0.9.1`: Refines `v0.9` by standardizing the `application/a2ui+json` MIME type, relaxing `surfaceId` lifetime uniqueness so surfaces can be recreated after deletion, and removing `List.listStyle` from the Basic Catalog.
 * `v1.0` (`"version": "1.0"` on the wire): Typed `AgentToRendererMessage` / `RendererToAgentMessage` envelopes, `@path` / `@call` / `@index` string expressions, `ObjectValue` dictionaries, bidirectional RPC (`CallAgentFunction`, `CallRendererFunction`), and UAX 31 identifier validation.
 
 Authority rule:
@@ -31,9 +31,9 @@ Authority rule:
 The repository is structured around the .NET 10 SDK and native Avalonia desktop renderer:
 
 * `src/`: Library packages.
-  * `A2Ui.Core/`: Core protocol DTOs, version adapters, `SurfaceManager`, RFC 6901 `DataModel`, `DynamicValue` evaluation, `RpcHandler`, and validation engines (`net8.0;net10.0`).
+  * `A2Ui.Core/`: Core protocol DTOs, version adapters, `SurfaceManager`, RFC 6901 `DataModel`, `DynamicValue` evaluation, 26 built-in functions (`FunctionRegistry`, `BuiltInFunctions`, `ExpressionParser`), `RpcHandler`, and validation engines (`CompositionValidator`, `Uax31Validator`, `RegexSubset`) (`net8.0;net10.0`).
   * `AgUi.Protocol/`: Streaming SSE parser (`SseEventParser`) and tool-call accumulator (`ToolCallArgsAccumulator`) built on `AGUI.Abstractions` (`1.0.1`) (`net8.0;net10.0`).
-  * `A2Ui.Avalonia/`: Native Avalonia `12.1.5` renderer with 18 Basic Catalog controls, 26 built-in functions, render-time version scoping, media URL security filtering, and event bridge (`net10.0`).
+  * `A2Ui.Avalonia/`: Native Avalonia `12.1.5` renderer with 18 Basic Catalog controls (`CatalogRegistry`, `Controls/A2UiSurface.cs`), render-time version scoping, media URL security filtering, and event bridge (`AgentEventBridge`) (`net10.0`).
 * `tests/`: Automated test projects and shared test utilities.
   * `A2Ui.Core.Tests/`: Unit tests and telemetry scenario tests for core functionality (`net8.0;net10.0`).
   * `AgUi.Protocol.Tests/`: Unit tests for AG-UI streaming and accumulator logic (`net8.0;net10.0`).

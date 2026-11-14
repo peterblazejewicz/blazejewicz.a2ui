@@ -12,7 +12,7 @@ using Blazejewicz.A2Ui.Core.Rpc;
 using Blazejewicz.A2Ui.Core.Surfaces;
 using Blazejewicz.A2Ui.Core.Validation;
 
-namespace Blazejewicz.A2Ui.Core.Tests.A2Ui;
+namespace Blazejewicz.A2Ui.Core.Tests;
 
 public sealed class RpcHandlerTests
 {
@@ -471,5 +471,225 @@ public sealed class RpcHandlerTests
         };
 
         handler.ValidateComponentBindings([comp]); // Should not throw
+    }
+
+    [Fact]
+    public void FunctionResponse_NullValueOnWire_DeserializesAndValidates()
+    {
+        const string Json = """{"version":"1.0","agentFunctionResponse":{"functionCallId":"call-void","value":null}}""";
+        var msg = JsonSerializer.Deserialize(Json, A2UiJsonSerializerContext.Default.AgentToRendererMessage);
+
+        Assert.NotNull(msg?.AgentFunctionResponse);
+        msg.AgentFunctionResponse.Validate();
+        Assert.NotNull(msg.AgentFunctionResponse.Value);
+        Assert.Equal(JsonValueKind.Null, msg.AgentFunctionResponse.Value.Value.ValueKind);
+
+        string roundTrip = JsonSerializer.Serialize(msg.AgentFunctionResponse, A2UiJsonSerializerContext.Default.FunctionResponse);
+        Assert.Contains("\"value\":null", roundTrip);
+    }
+
+    [Fact]
+    public void HandleCallRendererFunction_RuntimeException_ReturnsExecutionErrorCode()
+    {
+        using var handler = new RpcHandler();
+        handler.RegisterFunction(
+            new FunctionDefinition
+            {
+                Name = "failingFunc",
+                CatalogId = "basic",
+                AllowedCallers = AllowedCallers.RendererOrAgent,
+                Implementation = _ => throw new InvalidOperationException("Boom"),
+            }
+        );
+
+        var response = handler.HandleCallRendererFunction(
+            new CallRendererFunction
+            {
+                FunctionCallId = "call-err",
+                CallFunction = new FunctionCallValue { Call = "failingFunc", CatalogId = "basic" },
+            }
+        );
+
+        Assert.Equal("EXECUTION_ERROR", response.RendererFunctionResponse?.Error?.Code);
+    }
+
+    [Fact]
+    public void HandleCallRendererFunction_UnregisteredCatalog_DoesNotFallbackToOtherCatalog()
+    {
+        using var handler = new RpcHandler();
+        handler.RegisterFunction(
+            new FunctionDefinition
+            {
+                Name = "playMedia",
+                CatalogId = "media_catalog",
+                AllowedCallers = AllowedCallers.RendererOrAgent,
+                Implementation = _ => "ok",
+            }
+        );
+
+        var response = handler.HandleCallRendererFunction(
+            new CallRendererFunction
+            {
+                FunctionCallId = "call-cat",
+                CallFunction = new FunctionCallValue { Call = "playMedia", CatalogId = "non_existent_catalog" },
+            }
+        );
+
+        Assert.Equal("INVALID_FUNCTION_CALL", response.RendererFunctionResponse?.Error?.Code);
+        Assert.Contains("Catalog not found: non_existent_catalog", response.RendererFunctionResponse?.Error?.Message);
+    }
+
+    [Fact]
+    public void HandleCallRendererFunction_SurfaceScopingAndIndexAtRoot_ConformsToSpec()
+    {
+        var manager = new SurfaceManager();
+        using var handler = new RpcHandler();
+        handler.AttachTo(manager);
+
+        handler.RegisterFunction(
+            new FunctionDefinition
+            {
+                Name = "echoArgs",
+                CatalogId = "basic",
+                ReturnType = "object",
+                AllowedCallers = AllowedCallers.RendererOrAgent,
+                Implementation = args => JsonSerializer.Serialize(args),
+            }
+        );
+
+        manager.Process(
+            """
+            {
+              "version": "1.0",
+              "createSurface": {
+                "surfaceId": "s1",
+                "catalogId": "https://a2ui.org/specification/v1_0/catalogs/basic/catalog.json",
+                "dataModel": { "secret": "hidden-val" },
+                "components": [{ "id": "root", "component": "Text", "text": "hi" }]
+              }
+            }
+            """
+        );
+
+        // 1. Unknown surfaceId -> INVALID_FUNCTION_CALL
+        var unknownSurfaceResp = handler.HandleCallRendererFunction(
+            new CallRendererFunction
+            {
+                FunctionCallId = "c-unknown",
+                SurfaceId = "missing_surface",
+                CallFunction = new FunctionCallValue { Call = "echoArgs", CatalogId = "basic" },
+            }
+        );
+        Assert.Equal("INVALID_FUNCTION_CALL", unknownSurfaceResp.RendererFunctionResponse?.Error?.Code);
+        Assert.Contains("missing_surface", unknownSurfaceResp.RendererFunctionResponse?.Error?.Message);
+
+        // 2. Omitted surfaceId -> isolated empty data model (does not leak s1's /secret)
+        using var pathDoc = JsonDocument.Parse("""{"@path": "/secret"}""");
+        var isolatedResp = handler.HandleCallRendererFunction(
+            new CallRendererFunction
+            {
+                FunctionCallId = "c-isolated",
+                CallFunction = new FunctionCallValue
+                {
+                    Call = "echoArgs",
+                    CatalogId = "basic",
+                    Args = new Dictionary<string, JsonElement> { ["leaked"] = pathDoc.RootElement.Clone() },
+                },
+            }
+        );
+        Assert.Equal(JsonValueKind.Null, isolatedResp.RendererFunctionResponse!.Value!.Value.GetProperty("leaked").ValueKind);
+
+        // 3. @index at root DataContext -> EXECUTION_ERROR
+        using var indexDoc = JsonDocument.Parse("""{"@call": "@index"}""");
+        var indexResp = handler.HandleCallRendererFunction(
+            new CallRendererFunction
+            {
+                FunctionCallId = "c-index",
+                SurfaceId = "s1",
+                CallFunction = new FunctionCallValue
+                {
+                    Call = "echoArgs",
+                    CatalogId = "basic",
+                    Args = new Dictionary<string, JsonElement> { ["idx"] = indexDoc.RootElement.Clone() },
+                },
+            }
+        );
+        Assert.Equal("EXECUTION_ERROR", indexResp.RendererFunctionResponse?.Error?.Code);
+        Assert.Contains("index", indexResp.RendererFunctionResponse?.Error?.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task AttachTo_EndToEndInboundCallAndResponse_AndMulticastOutboundAsync()
+    {
+        var manager = new SurfaceManager();
+        using var handler = new RpcHandler();
+        handler.AttachTo(manager);
+
+        handler.RegisterFunction(
+            new FunctionDefinition
+            {
+                Name = "ping",
+                CatalogId = "basic",
+                ReturnType = "string",
+                AllowedCallers = AllowedCallers.RendererOrAgent,
+                Implementation = _ => "pong",
+            }
+        );
+
+        var listener1Messages = new List<RendererToAgentMessage>();
+        var listener2Messages = new List<RendererToAgentMessage>();
+        handler.MessageOutboundAsync += msg =>
+        {
+            listener1Messages.Add(msg);
+            return Task.CompletedTask;
+        };
+        handler.MessageOutboundAsync += msg =>
+        {
+            listener2Messages.Add(msg);
+            return Task.CompletedTask;
+        };
+
+        var agentTask = handler.InvokeAgentFunctionAsync(
+            "s1",
+            new FunctionCallValue { Call = "remoteOp", CatalogId = "basic" },
+            TestContext.Current.CancellationToken
+        );
+
+        Assert.Single(listener1Messages);
+        Assert.Single(listener2Messages);
+        string outboundCallId = listener1Messages[0].CallAgentFunction!.FunctionCallId;
+
+        manager.Process(
+            $$"""
+            {
+              "version": "1.0",
+              "agentFunctionResponse": {
+                "functionCallId": "{{outboundCallId}}",
+                "value": "settled-via-surface-manager"
+              }
+            }
+            """
+        );
+
+        var settled = await agentTask.ConfigureAwait(true);
+        Assert.Equal("settled-via-surface-manager", settled.Value?.GetString());
+
+        manager.Process(
+            """
+            {
+              "version": "1.0",
+              "callRendererFunction": {
+                "functionCallId": "in-1",
+                "callFunction": {
+                  "@call": "ping",
+                  "catalogId": "basic"
+                }
+              }
+            }
+            """
+        );
+
+        Assert.Equal(2, listener1Messages.Count);
+        Assert.Equal("pong", listener1Messages[1].RendererFunctionResponse?.Value?.GetString());
     }
 }

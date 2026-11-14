@@ -3,7 +3,7 @@ using System.Text.Json;
 using Blazejewicz.A2Ui.Core.Bindings;
 using Blazejewicz.A2Ui.Core.Surfaces;
 
-namespace Blazejewicz.A2Ui.Core.Tests.A2Ui;
+namespace Blazejewicz.A2Ui.Core.Tests;
 
 public sealed class V10DynamicValueAndDataModelTests
 {

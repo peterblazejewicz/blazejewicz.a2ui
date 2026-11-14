@@ -1,6 +1,6 @@
 using Blazejewicz.A2Ui.Core.Functions;
 
-namespace Blazejewicz.A2Ui.Core.Tests.A2Ui;
+namespace Blazejewicz.A2Ui.Core.Tests;
 
 public sealed class RegexSubsetConformanceTests
 {

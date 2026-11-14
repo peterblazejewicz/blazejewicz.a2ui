@@ -226,7 +226,7 @@ internal static class CheckHelper
     {
         try
         {
-            return ctx.Resolve(check.Condition);
+            return ctx is RenderContext rc ? rc.ResolveCheck(check.Condition) : ctx.Resolve(check.Condition);
         }
         catch (Exception ex)
         {

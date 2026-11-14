@@ -1,4 +1,13 @@
 <Solution>
+  <Folder Name="/Solution Items/">
+    <File Path=".editorconfig" />
+    <File Path="AGENTS.md" />
+    <File Path="Directory.Build.props" />
+    <File Path="Directory.Packages.props" />
+    <File Path="README.md" />
+    <File Path="RELEASE_NOTES.md" />
+    <File Path="TELEMETRY.md" />
+  </Folder>
   <Folder Name="/src/">
     <Project Path="src/A2Ui.Core/A2Ui.Core.csproj" />
     <Project Path="src/AgUi.Protocol/AgUi.Protocol.csproj" />

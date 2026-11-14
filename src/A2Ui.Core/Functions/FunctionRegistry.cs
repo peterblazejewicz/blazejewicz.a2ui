@@ -4,7 +4,7 @@ using System.Text.RegularExpressions;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
-namespace Blazejewicz.A2Ui.Avalonia.Functions;
+namespace Blazejewicz.A2Ui.Core.Functions;
 
 /// <summary>
 /// Immutable registry mapping function names to evaluation delegates.
@@ -13,11 +13,17 @@ namespace Blazejewicz.A2Ui.Avalonia.Functions;
 /// </summary>
 public sealed class FunctionRegistry : IFunctionRegistry
 {
-    private readonly FrozenDictionary<string, Func<IReadOnlyDictionary<string, string?>, string?>> _functions;
+    private readonly FrozenDictionary<
+        string,
+        Func<IReadOnlyDictionary<string, string?>, FunctionEvaluationContext?, string?>
+    > _functions;
     private readonly ILogger<FunctionRegistry> _logger;
 
     internal FunctionRegistry(
-        Dictionary<string, Func<IReadOnlyDictionary<string, string?>, string?>> functions,
+        Dictionary<
+            string,
+            Func<IReadOnlyDictionary<string, string?>, FunctionEvaluationContext?, string?>
+        > functions,
         ILogger<FunctionRegistry>? logger = null
     )
     {
@@ -26,7 +32,18 @@ public sealed class FunctionRegistry : IFunctionRegistry
     }
 
     /// <inheritdoc />
-    public string? Evaluate(string functionName, IReadOnlyDictionary<string, string?> resolvedArgs)
+    public bool IsRegistered(string functionName) => this._functions.ContainsKey(functionName);
+
+    /// <inheritdoc />
+    public string? Evaluate(string functionName, IReadOnlyDictionary<string, string?> resolvedArgs) =>
+        this.Evaluate(functionName, resolvedArgs, null);
+
+    /// <inheritdoc />
+    public string? Evaluate(
+        string functionName,
+        IReadOnlyDictionary<string, string?> resolvedArgs,
+        FunctionEvaluationContext? context
+    )
     {
         if (!this._functions.TryGetValue(functionName, out var fn))
         {
@@ -36,7 +53,7 @@ public sealed class FunctionRegistry : IFunctionRegistry
 
         try
         {
-            return fn(resolvedArgs);
+            return fn(resolvedArgs, context);
         }
         catch (Exception ex)
             when (ex
@@ -65,7 +82,7 @@ public sealed class FunctionRegistry : IFunctionRegistry
             .Register("formatNumber", BuiltInFunctions.FormatNumber)
             .Register("formatCurrency", BuiltInFunctions.FormatCurrency)
             .Register("formatDate", BuiltInFunctions.FormatDate)
-            .Register("pluralize", BuiltInFunctions.Pluralize)
+            .Register("pluralize", (args, ctx) => BuiltInFunctions.Pluralize(args, ctx))
             // Arithmetic
             .Register("add", BuiltInFunctions.Add)
             .Register("subtract", BuiltInFunctions.Subtract)
@@ -91,7 +108,7 @@ public sealed class FunctionRegistry : IFunctionRegistry
             .Register("length", BuiltInFunctions.Length)
             .Register("numeric", BuiltInFunctions.Numeric)
             // Void
-            .Register("openUrl", BuiltInFunctions.OpenUrl)
+            .Register("openUrl", (args, ctx) => BuiltInFunctions.OpenUrl(args, ctx))
             .Build();
 }
 
@@ -100,11 +117,25 @@ public sealed class FunctionRegistry : IFunctionRegistry
 /// </summary>
 public sealed class FunctionRegistryBuilder
 {
-    private readonly Dictionary<string, Func<IReadOnlyDictionary<string, string?>, string?>> _functions = [];
+    private readonly Dictionary<
+        string,
+        Func<IReadOnlyDictionary<string, string?>, FunctionEvaluationContext?, string?>
+    > _functions = [];
     private ILoggerFactory? _loggerFactory;
 
     /// <summary>Register a named function. Returns this for chaining.</summary>
     public FunctionRegistryBuilder Register(string name, Func<IReadOnlyDictionary<string, string?>, string?> fn)
+    {
+        ArgumentNullException.ThrowIfNull(name);
+        ArgumentNullException.ThrowIfNull(fn);
+        return this.Register(name, (args, _) => fn(args));
+    }
+
+    /// <summary>Register a named context-aware function. Returns this for chaining.</summary>
+    public FunctionRegistryBuilder Register(
+        string name,
+        Func<IReadOnlyDictionary<string, string?>, FunctionEvaluationContext?, string?> fn
+    )
     {
         ArgumentNullException.ThrowIfNull(name);
         ArgumentNullException.ThrowIfNull(fn);

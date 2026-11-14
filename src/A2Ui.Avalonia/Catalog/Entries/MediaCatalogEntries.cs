@@ -16,9 +16,24 @@ namespace Blazejewicz.A2Ui.Avalonia.Catalog.Entries;
 /// Initializes a new instance of the <see cref="ImageCatalogEntry"/> class.
 /// </remarks>
 /// <param name="logger">Optional logger for image download diagnostics.</param>
-public sealed class ImageCatalogEntry(ILogger<ImageCatalogEntry>? logger = null) : ICatalogEntry
+/// <param name="httpClient">Optional HTTP client used for downloading remote images.</param>
+/// <param name="options">Optional Avalonia renderer options controlling allowed schemes and size limits.</param>
+public sealed class ImageCatalogEntry(
+    ILogger<ImageCatalogEntry>? logger = null,
+    HttpClient? httpClient = null,
+    A2UiAvaloniaOptions? options = null
+) : ICatalogEntry
 {
+    private static readonly HttpClient s_defaultHttp = new(
+        new SocketsHttpHandler { PooledConnectionLifetime = TimeSpan.FromMinutes(2) }
+    )
+    {
+        Timeout = TimeSpan.FromSeconds(30),
+    };
+
     private readonly ILogger<ImageCatalogEntry> _logger = logger ?? NullLogger<ImageCatalogEntry>.Instance;
+    private readonly HttpClient _http = httpClient ?? options?.HttpClient ?? s_defaultHttp;
+    private readonly A2UiAvaloniaOptions? _options = options;
 
     /// <inheritdoc />
     public string ComponentType => "Image";
@@ -37,7 +52,7 @@ public sealed class ImageCatalogEntry(ILogger<ImageCatalogEntry>? logger = null)
         };
         var img = new Image { Stretch = stretch };
         string? url = context.Resolve(typed.Url);
-        if (url is not null && MediaSecurityHelper.IsSafeMediaUrl(url))
+        if (url is not null && MediaSecurityHelper.IsSafeMediaUrl(url, this._options?.AllowedMediaSchemes))
         {
             img.Tag = url;
             _ = this.LoadImageAsync(img, url, context.SurfaceCancellation);
@@ -71,7 +86,7 @@ public sealed class ImageCatalogEntry(ILogger<ImageCatalogEntry>? logger = null)
             return true;
         }
 
-        if (!MediaSecurityHelper.IsSafeMediaUrl(url))
+        if (!MediaSecurityHelper.IsSafeMediaUrl(url, this._options?.AllowedMediaSchemes))
         {
             img.Source = null;
             img.Tag = null;
@@ -90,25 +105,59 @@ public sealed class ImageCatalogEntry(ILogger<ImageCatalogEntry>? logger = null)
         return true;
     }
 
-    private static readonly HttpClient s_http = new() { Timeout = TimeSpan.FromSeconds(30) };
+    /// <summary>Maximum default image download size (10 MB) to avoid unbounded memory allocation.</summary>
+    private const int DefaultMaxImageBytes = A2UiAvaloniaOptions.DefaultMaxImageBytes;
 
-    /// <summary>Maximum image download size (10 MB) to avoid unbounded memory allocation.</summary>
-    private const int MaxImageBytes = 10 * 1024 * 1024;
-
-    private async Task LoadImageAsync(Image img, string url, CancellationToken ct)
+    internal async Task LoadImageAsync(Image img, string url, CancellationToken ct)
     {
         try
         {
-            // Download to byte array — Avalonia's Bitmap constructor needs a seekable stream.
-            byte[] data = await s_http.GetByteArrayAsync(url, ct).ConfigureAwait(false);
+            int maxBytes = this._options?.MaxImageBytes is > 0
+                ? this._options.MaxImageBytes
+                : DefaultMaxImageBytes;
+            int maxMb = Math.Max(1, maxBytes / (1024 * 1024));
 
-            if (data.Length > MaxImageBytes)
+            using var response = await this._http
+                .GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct)
+                .ConfigureAwait(false);
+            response.EnsureSuccessStatusCode();
+
+            if (response.Content.Headers.ContentLength is long contentLength && contentLength > maxBytes)
             {
-                MediaLog.ImageExceedsSizeLimit(this._logger, url, MaxImageBytes / (1024 * 1024), data.Length);
+                MediaLog.ImageExceedsSizeLimit(
+                    this._logger,
+                    url,
+                    maxMb,
+                    (int)Math.Min(contentLength, int.MaxValue)
+                );
                 return;
             }
 
-            using var ms = new MemoryStream(data);
+            using var contentStream = await response.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
+            using var ms = new MemoryStream(
+                response.Content.Headers.ContentLength is long cl and > 0 and <= int.MaxValue ? (int)cl : 0
+            );
+            byte[] buffer = new byte[81920];
+            int totalRead = 0;
+            while (true)
+            {
+                int read = await contentStream.ReadAsync(buffer, ct).ConfigureAwait(false);
+                if (read == 0)
+                {
+                    break;
+                }
+
+                totalRead += read;
+                if (totalRead > maxBytes)
+                {
+                    MediaLog.ImageExceedsSizeLimit(this._logger, url, maxMb, totalRead);
+                    return;
+                }
+
+                ms.Write(buffer, 0, read);
+            }
+
+            ms.Position = 0;
             var bitmap = new Bitmap(ms);
 
             // Dispatcher.UIThread.InvokeAsync returns DispatcherOperation, not Task —
@@ -200,6 +249,7 @@ public sealed class SurfaceCatalogEntry : ICatalogEntry
         var panel = new StackPanel { Spacing = 12 };
         foreach (var child in context.RenderChildren(component.Id))
         {
+            RenderContext.DetachFromParent(child);
             panel.Children.Add(child);
         }
 
@@ -214,10 +264,15 @@ public sealed class SurfaceCatalogEntry : ICatalogEntry
             return false;
         }
 
-        panel.Children.Clear();
-        foreach (var child in context.RenderChildren(component.Id))
+        var children = context.RenderChildren(component.Id).ToList();
+        if (!LayoutHelper.SequenceReferenceEqual(panel.Children, children))
         {
-            panel.Children.Add(child);
+            panel.Children.Clear();
+            foreach (var child in children)
+            {
+                RenderContext.DetachFromParent(child);
+                panel.Children.Add(child);
+            }
         }
 
         return true;

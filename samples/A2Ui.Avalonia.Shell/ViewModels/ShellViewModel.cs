@@ -63,12 +63,9 @@ public sealed partial class ShellViewModel : ObservableObject, IDisposable
 
             ShellViewModelLog.ProcessingMessages(this._logger, messages.Count, "query");
 
-            foreach (string msg in messages)
-            {
-                this._manager.Process(msg);
-            }
+            this.ProcessMessages(messages);
 
-            this._logger.LogInformation("Processed {Count} message(s) for query: {Query}", messages.Count, query);
+            ShellViewModelLog.ProcessedQueryMessages(this._logger, messages.Count);
         }
         catch (OperationCanceledException)
         {
@@ -76,12 +73,12 @@ public sealed partial class ShellViewModel : ObservableObject, IDisposable
         }
         catch (HttpRequestException ex)
         {
-            this._logger.LogError(ex, "Failed to send query to agent");
+            ShellViewModelLog.SendQueryFailed(this._logger, ex);
             this.ErrorText = $"Connection error: {ex.Message}";
         }
         catch (Exception ex)
         {
-            this._logger.LogError(ex, "Unexpected error sending query");
+            ShellViewModelLog.UnexpectedSendQueryError(this._logger, ex);
             this.ErrorText = $"Error: {ex.Message}";
         }
         finally
@@ -105,24 +102,15 @@ public sealed partial class ShellViewModel : ObservableObject, IDisposable
         {
             string? protocolVersion = this._manager.GetSurface(e.SurfaceId)?.ProtocolVersion;
             object envelope = UserActionSerializer.Serialize(e, protocolVersion);
-            this._logger.LogInformation("Dispatching action: {Action} on {Surface}", e.EventName, e.SurfaceId);
-
-            this._manager.Clear();
+            ShellViewModelLog.DispatchingAction(this._logger, e.EventName, e.SurfaceId);
 
             IReadOnlyList<string> messages = await this._client.SendActionRawAsync(envelope, ct).ConfigureAwait(true);
 
             ShellViewModelLog.ProcessingMessages(this._logger, messages.Count, "action");
 
-            foreach (string msg in messages)
-            {
-                this._manager.Process(msg);
-            }
+            this.ProcessMessages(messages);
 
-            this._logger.LogInformation(
-                "Processed {Count} message(s) for action: {Action}",
-                messages.Count,
-                e.EventName
-            );
+            ShellViewModelLog.ProcessedActionMessages(this._logger, messages.Count, e.EventName);
         }
         catch (OperationCanceledException)
         {
@@ -130,17 +118,39 @@ public sealed partial class ShellViewModel : ObservableObject, IDisposable
         }
         catch (HttpRequestException ex)
         {
-            this._logger.LogError(ex, "Failed to send action to agent");
+            ShellViewModelLog.SendActionFailed(this._logger, ex);
             this.ErrorText = $"Connection error: {ex.Message}";
         }
         catch (Exception ex)
         {
-            this._logger.LogError(ex, "Unexpected error sending action");
+            ShellViewModelLog.UnexpectedSendActionError(this._logger, ex);
             this.ErrorText = $"Error: {ex.Message}";
         }
         finally
         {
             this.IsBusy = false;
+        }
+    }
+
+    private void ProcessMessages(IReadOnlyList<string> messages)
+    {
+        var errors = new List<string>();
+        foreach (string msg in messages)
+        {
+            try
+            {
+                this._manager.Process(msg);
+            }
+            catch (Exception ex)
+            {
+                ShellViewModelLog.BatchMessageProcessingFailed(this._logger, ex);
+                errors.Add(ex.Message);
+            }
+        }
+
+        if (errors.Count > 0)
+        {
+            this.ErrorText = string.Join("; ", errors);
         }
     }
 
@@ -154,7 +164,7 @@ public sealed partial class ShellViewModel : ObservableObject, IDisposable
         }
         catch (Exception ex)
         {
-            this._logger.LogWarning(ex, "Could not fetch agent card");
+            ShellViewModelLog.AgentCardFetchFailed(this._logger, ex);
             this.StatusText = "Agent (offline)";
         }
     }
@@ -165,7 +175,20 @@ public sealed partial class ShellViewModel : ObservableObject, IDisposable
 
     // ── SurfaceManager event handlers ─────────────────────
 
-    private void OnSurfaceCreated(object? sender, SurfaceCreatedEventArgs e) => this.Surfaces.Add(e.Surface);
+    private void OnSurfaceCreated(object? sender, SurfaceCreatedEventArgs e)
+    {
+        for (int i = 0; i < this.Surfaces.Count; i++)
+        {
+            if (this.Surfaces[i].SurfaceId == e.Surface.SurfaceId)
+            {
+                this.Surfaces[i] = e.Surface;
+                SurfaceRefreshRequested?.Invoke(this, EventArgs.Empty);
+                return;
+            }
+        }
+
+        this.Surfaces.Add(e.Surface);
+    }
 
     private void OnSurfaceDeleted(object? sender, SurfaceDeletedEventArgs e)
     {
@@ -204,4 +227,67 @@ internal static partial class ShellViewModelLog
         Message = "Processing {MessageCount} A2UI message(s) from {Trigger}"
     )]
     public static partial void ProcessingMessages(ILogger logger, int messageCount, string trigger);
+
+    [LoggerMessage(
+        EventId = 2,
+        Level = LogLevel.Information,
+        Message = "Processed {Count} message(s) for query"
+    )]
+    public static partial void ProcessedQueryMessages(ILogger logger, int count);
+
+    [LoggerMessage(
+        EventId = 3,
+        Level = LogLevel.Error,
+        Message = "Failed to send query to agent"
+    )]
+    public static partial void SendQueryFailed(ILogger logger, Exception ex);
+
+    [LoggerMessage(
+        EventId = 4,
+        Level = LogLevel.Error,
+        Message = "Unexpected error sending query"
+    )]
+    public static partial void UnexpectedSendQueryError(ILogger logger, Exception ex);
+
+    [LoggerMessage(
+        EventId = 5,
+        Level = LogLevel.Information,
+        Message = "Dispatching action: {Action} on {Surface}"
+    )]
+    public static partial void DispatchingAction(ILogger logger, string action, string surface);
+
+    [LoggerMessage(
+        EventId = 6,
+        Level = LogLevel.Information,
+        Message = "Processed {Count} message(s) for action: {Action}"
+    )]
+    public static partial void ProcessedActionMessages(ILogger logger, int count, string action);
+
+    [LoggerMessage(
+        EventId = 7,
+        Level = LogLevel.Error,
+        Message = "Failed to send action to agent"
+    )]
+    public static partial void SendActionFailed(ILogger logger, Exception ex);
+
+    [LoggerMessage(
+        EventId = 8,
+        Level = LogLevel.Error,
+        Message = "Unexpected error sending action"
+    )]
+    public static partial void UnexpectedSendActionError(ILogger logger, Exception ex);
+
+    [LoggerMessage(
+        EventId = 9,
+        Level = LogLevel.Warning,
+        Message = "Failed to process A2UI message in batch"
+    )]
+    public static partial void BatchMessageProcessingFailed(ILogger logger, Exception ex);
+
+    [LoggerMessage(
+        EventId = 10,
+        Level = LogLevel.Warning,
+        Message = "Could not fetch agent card"
+    )]
+    public static partial void AgentCardFetchFailed(ILogger logger, Exception ex);
 }

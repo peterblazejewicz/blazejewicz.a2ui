@@ -37,7 +37,7 @@ public partial class GalleryWindow : Window
 
             if (this._surfaceHost is null)
             {
-                this._logger.LogWarning("SurfaceHost control not found in visual tree");
+                GalleryWindowLog.SurfaceHostNotFound(this._logger);
                 return;
             }
 
@@ -71,7 +71,7 @@ public partial class GalleryWindow : Window
             }
             catch (Exception ex)
             {
-                this._logger.LogError(ex, "Failed to initialize gallery");
+                GalleryWindowLog.GalleryInitializationFailed(this._logger, ex);
                 this.Title = $"A2UI Gallery — Error: {ex.Message}";
             }
         }
@@ -107,4 +107,17 @@ public partial class GalleryWindow : Window
             this._surfaceHost.DataModelChanged -= this.OnDataModelChanged;
         }
     }
+}
+
+internal static partial class GalleryWindowLog
+{
+    [LoggerMessage(
+        EventId = 1,
+        Level = LogLevel.Warning,
+        Message = "SurfaceHost control not found in visual tree"
+    )]
+    public static partial void SurfaceHostNotFound(ILogger logger);
+
+    [LoggerMessage(EventId = 2, Level = LogLevel.Error, Message = "Failed to initialize gallery")]
+    public static partial void GalleryInitializationFailed(ILogger logger, Exception ex);
 }

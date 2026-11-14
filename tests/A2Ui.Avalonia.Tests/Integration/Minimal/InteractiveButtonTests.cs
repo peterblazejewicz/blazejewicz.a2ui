@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Avalonia.Controls;
 using Avalonia.Headless.XUnit;
 using Xunit;
@@ -63,7 +64,7 @@ public sealed class InteractiveButtonTests
     }
 
     [AvaloniaFact]
-    public void ClickButton_PayloadIsNull_EmptyContextResolvesToNull()
+    public void ClickButton_EmptyContextResolvesToEmptyDictionary()
     {
         RenderResult result = GalleryTestHelper.ReplayExample("minimal/3_interactive_button.json");
 
@@ -73,6 +74,7 @@ public sealed class InteractiveButtonTests
         GalleryTestHelper.ClickButton(button);
 
         UserActionEventArgs action = result.ActionLog.Single(a => a.EventName == "button_clicked");
-        Assert.Null(action.Payload);
+        var payload = Assert.IsType<Dictionary<string, JsonElement>>(action.Payload);
+        Assert.Empty(payload);
     }
 }

@@ -1,29 +1,37 @@
-namespace Blazejewicz.A2Ui.Avalonia.Functions;
+using System.Globalization;
+using System.Text;
+
+namespace Blazejewicz.A2Ui.Core.Functions;
 
 /// <summary>
 /// Discriminated union for expression tokens produced by <see cref="ExpressionParser"/>.
 /// </summary>
-internal abstract record ExpressionToken;
+public abstract record ExpressionToken;
 
-internal sealed record LiteralToken(string Value) : ExpressionToken;
+/// <summary>Literal text token.</summary>
+public sealed record LiteralToken(string Value) : ExpressionToken;
 
-internal sealed record PathToken(string Path) : ExpressionToken;
+/// <summary>Data model JSON Pointer path token.</summary>
+public sealed record PathToken(string Path) : ExpressionToken;
 
-internal sealed record BoolToken(bool Value) : ExpressionToken;
+/// <summary>Boolean literal token.</summary>
+public sealed record BoolToken(bool Value) : ExpressionToken;
 
-internal sealed record NumberToken(double Value) : ExpressionToken;
+/// <summary>Numeric literal token.</summary>
+public sealed record NumberToken(double Value) : ExpressionToken;
 
-internal sealed record FunctionCallToken(string Name, IReadOnlyDictionary<string, ExpressionToken> Args)
+/// <summary>Function call token with named arguments.</summary>
+public sealed record FunctionCallToken(string Name, IReadOnlyDictionary<string, ExpressionToken> Args)
     : ExpressionToken;
 
 /// <summary>
 /// Recursive-descent parser that interpolates <c>${...}</c> expressions in strings,
 /// supporting nested expressions, path bindings, function calls, and escape sequences.
 /// </summary>
-internal sealed class ExpressionParser
+public sealed class ExpressionParser
 {
     /// <summary>Maximum allowed recursion depth to prevent stack overflows.</summary>
-    private const int MaxDepth = 10;
+    private const int MaxDepth = 100;
 
     /// <summary>
     /// Parse an input string into a list of expression tokens.
@@ -37,7 +45,12 @@ internal sealed class ExpressionParser
             throw new A2UiExpressionException("Max recursion depth reached in parse");
         }
 
-        if (string.IsNullOrEmpty(input) || !input.Contains("${", StringComparison.Ordinal))
+        if (string.IsNullOrEmpty(input))
+        {
+            return [];
+        }
+
+        if (!input.Contains("${", StringComparison.Ordinal))
         {
             return [new LiteralToken(input)];
         }
@@ -52,12 +65,12 @@ internal sealed class ExpressionParser
                 scanner.Advance(2);
                 string content = ExtractInterpolationContent(scanner);
                 ExpressionToken parsed = this.ParseExpression(content, depth + 1);
-                parts.Add(parsed);
+                AddTokenOrMergeLiteral(parts, parsed);
             }
             else if (scanner.Peek() == '\\' && scanner.Peek(1) == '$' && scanner.Peek(2) == '{')
             {
                 scanner.Advance(); // skip backslash
-                parts.Add(new LiteralToken("${"));
+                AddTokenOrMergeLiteral(parts, new LiteralToken("${"));
                 scanner.Advance(2); // skip ${
             }
             else
@@ -77,16 +90,32 @@ internal sealed class ExpressionParser
 
                     scanner.Advance();
                 }
+
                 string literal = input[start..scanner.Position];
                 if (literal.Length > 0)
                 {
-                    parts.Add(new LiteralToken(literal));
+                    AddTokenOrMergeLiteral(parts, new LiteralToken(literal));
                 }
             }
         }
 
-        // Filter empty literals
-        return parts.Where(p => p is not LiteralToken { Value.Length: 0 }).ToList();
+        return parts;
+    }
+
+    private static void AddTokenOrMergeLiteral(List<ExpressionToken> parts, ExpressionToken token)
+    {
+        if (token is LiteralToken { Value.Length: 0 })
+        {
+            return;
+        }
+
+        if (token is LiteralToken lit && parts.Count > 0 && parts[^1] is LiteralToken prevLit)
+        {
+            parts[^1] = new LiteralToken(prevLit.Value + lit.Value);
+            return;
+        }
+
+        parts.Add(token);
     }
 
     /// <summary>
@@ -94,6 +123,11 @@ internal sealed class ExpressionParser
     /// </summary>
     public ExpressionToken ParseExpression(string expr, int depth = 0)
     {
+        if (depth > MaxDepth)
+        {
+            throw new A2UiExpressionException("Max recursion depth reached in parse");
+        }
+
         expr = expr.Trim();
         if (expr.Length == 0)
         {
@@ -102,6 +136,7 @@ internal sealed class ExpressionParser
 
         var scanner = new Scanner(expr);
         ExpressionToken result = this.ParseExpressionInternal(scanner, depth);
+        scanner.SkipWhitespace();
 
         if (!scanner.IsAtEnd)
         {
@@ -136,8 +171,8 @@ internal sealed class ExpressionParser
             return ParseStringLiteral(scanner);
         }
 
-        // 2. Number literals
-        if (IsDigit(ch))
+        // 2. Number literals (digit, leading dot before digit, or sign before digit/dot-digit)
+        if (IsNumberStart(scanner))
         {
             return ParseNumberLiteral(scanner);
         }
@@ -169,10 +204,33 @@ internal sealed class ExpressionParser
 
         if (token.Length == 0)
         {
-            return new LiteralToken("");
+            throw new A2UiExpressionException(
+                $"Unexpected characters at end of expression: '{scanner.Input[scanner.Position..]}'"
+            );
         }
 
         return new PathToken(token);
+    }
+
+    private static bool IsNumberStart(Scanner scanner)
+    {
+        char ch = scanner.Peek();
+        if (IsDigit(ch))
+        {
+            return true;
+        }
+
+        if (ch == '.' && IsDigit(scanner.Peek(1)))
+        {
+            return true;
+        }
+
+        if (ch is '+' or '-' && (IsDigit(scanner.Peek(1)) || (scanner.Peek(1) == '.' && IsDigit(scanner.Peek(2)))))
+        {
+            return true;
+        }
+
+        return false;
     }
 
     private static string ScanPathOrIdentifier(Scanner scanner)
@@ -181,24 +239,38 @@ internal sealed class ExpressionParser
         while (!scanner.IsAtEnd)
         {
             char c = scanner.Peek();
-            if (IsAlNum(c) || c is '/' or '.' or '_' or '-')
+            if (c is '/' or '.' or '-' or '_')
             {
                 scanner.Advance();
+            }
+            else if (
+                Rune.TryGetRuneAt(scanner.Input, scanner.Position, out Rune rune) && Scanner.IsXidContinue(rune)
+            )
+            {
+                scanner.Advance(rune.Utf16SequenceLength);
             }
             else
             {
                 break;
             }
         }
+
         return scanner.Input[start..scanner.Position];
     }
 
     private static string ScanIdentifier(Scanner scanner)
     {
         int start = scanner.Position;
-        while (!scanner.IsAtEnd && (IsAlNum(scanner.Peek()) || scanner.Peek() == '_'))
+        while (!scanner.IsAtEnd)
         {
-            scanner.Advance();
+            if (Rune.TryGetRuneAt(scanner.Input, scanner.Position, out Rune rune) && Scanner.IsXidContinue(rune))
+            {
+                scanner.Advance(rune.Utf16SequenceLength);
+            }
+            else
+            {
+                break;
+            }
         }
 
         return scanner.Input[start..scanner.Position];
@@ -206,6 +278,11 @@ internal sealed class ExpressionParser
 
     private FunctionCallToken ParseFunctionCall(string funcName, Scanner scanner, int depth)
     {
+        if (depth > MaxDepth)
+        {
+            throw new A2UiExpressionException("Max recursion depth reached in parse");
+        }
+
         scanner.Match('(');
         scanner.SkipWhitespace();
 
@@ -216,7 +293,7 @@ internal sealed class ExpressionParser
             string argName = ScanIdentifier(scanner);
             scanner.SkipWhitespace();
 
-            if (!scanner.Match(':'))
+            if (argName.Length == 0 || !scanner.Match(':'))
             {
                 throw new A2UiExpressionException(
                     $"Expected ':' after argument name '{argName}' in function '{funcName}'"
@@ -224,7 +301,7 @@ internal sealed class ExpressionParser
             }
 
             scanner.SkipWhitespace();
-            args[argName] = this.ParseExpressionInternal(scanner, depth);
+            args[argName] = this.ParseExpressionInternal(scanner, depth + 1);
             scanner.SkipWhitespace();
 
             if (!scanner.IsAtEnd && scanner.Peek() == ',')
@@ -245,7 +322,7 @@ internal sealed class ExpressionParser
     private static LiteralToken ParseStringLiteral(Scanner scanner)
     {
         char quote = scanner.Advance();
-        var sb = new System.Text.StringBuilder();
+        var sb = new StringBuilder();
         bool closed = false;
 
         while (!scanner.IsAtEnd)
@@ -291,15 +368,79 @@ internal sealed class ExpressionParser
     private static NumberToken ParseNumberLiteral(Scanner scanner)
     {
         int start = scanner.Position;
-        while (!scanner.IsAtEnd && (IsDigit(scanner.Peek()) || scanner.Peek() == '.'))
+        if (scanner.Peek() is '+' or '-')
         {
             scanner.Advance();
         }
 
-        string text = scanner.Input[start..scanner.Position];
-        if (!double.TryParse(text, System.Globalization.CultureInfo.InvariantCulture, out double value))
+        bool seenDot = false;
+        while (!scanner.IsAtEnd)
         {
-            throw new A2UiExpressionException($"Invalid number literal: '{text}'");
+            char c = scanner.Peek();
+            if (IsDigit(c))
+            {
+                scanner.Advance();
+            }
+            else if (c == '.')
+            {
+                if (seenDot)
+                {
+                    scanner.Advance();
+                    while (!scanner.IsAtEnd && (IsDigit(scanner.Peek()) || scanner.Peek() == '.'))
+                    {
+                        scanner.Advance();
+                    }
+
+                    throw new A2UiExpressionException(
+                        $"Invalid number literal: '{scanner.Input[start..scanner.Position]}'"
+                    );
+                }
+
+                seenDot = true;
+                scanner.Advance();
+            }
+            else
+            {
+                break;
+            }
+        }
+
+        if (!scanner.IsAtEnd && scanner.Peek() is 'e' or 'E')
+        {
+            scanner.Advance();
+            if (!scanner.IsAtEnd && scanner.Peek() is '+' or '-')
+            {
+                scanner.Advance();
+            }
+
+            int expDigits = 0;
+            while (!scanner.IsAtEnd && IsDigit(scanner.Peek()))
+            {
+                scanner.Advance();
+                expDigits++;
+            }
+
+            if (expDigits == 0 || (!scanner.IsAtEnd && scanner.Peek() == '.'))
+            {
+                throw new A2UiExpressionException(
+                    $"Invalid number literal: '{scanner.Input[start..scanner.Position]}'"
+                );
+            }
+        }
+
+        string text = scanner.Input[start..scanner.Position];
+        if (
+            !double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out double value)
+            || double.IsInfinity(value)
+            || double.IsNaN(value)
+        )
+        {
+            throw new A2UiExpressionException($"Number literal out of range: '{text}'");
+        }
+
+        if (value == 0.0)
+        {
+            value = 0.0;
         }
 
         return new NumberToken(value);
@@ -348,8 +489,6 @@ internal sealed class ExpressionParser
         // Exclude the closing brace from the content
         return scanner.Input[start..(scanner.Position - 1)];
     }
-
-    private static bool IsAlNum(char c) => c is (>= 'a' and <= 'z') or (>= 'A' and <= 'Z') or (>= '0' and <= '9');
 
     private static bool IsDigit(char c) => c is >= '0' and <= '9';
 }
@@ -401,10 +540,8 @@ internal sealed class Scanner(string input)
         {
             char next = this.Input[afterEnd];
             if (
-                next is (>= 'a' and <= 'z')
-                    or (>= 'A' and <= 'Z')
-                    or (>= '0' and <= '9')
-                    or '_'
+                next is '/' or '.' or '-' or '_'
+                || (Rune.TryGetRuneAt(this.Input, afterEnd, out Rune nextRune) && IsXidContinue(nextRune))
             )
             {
                 return false;
@@ -414,6 +551,19 @@ internal sealed class Scanner(string input)
         this.Position += keyword.Length;
         return true;
     }
+
+    public static bool IsXidContinue(Rune rune) =>
+        Rune.GetUnicodeCategory(rune)
+            is UnicodeCategory.UppercaseLetter
+                or UnicodeCategory.LowercaseLetter
+                or UnicodeCategory.TitlecaseLetter
+                or UnicodeCategory.ModifierLetter
+                or UnicodeCategory.OtherLetter
+                or UnicodeCategory.LetterNumber
+                or UnicodeCategory.NonSpacingMark
+                or UnicodeCategory.SpacingCombiningMark
+                or UnicodeCategory.DecimalDigitNumber
+                or UnicodeCategory.ConnectorPunctuation;
 
     public void SkipWhitespace()
     {

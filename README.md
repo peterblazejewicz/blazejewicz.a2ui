@@ -8,8 +8,8 @@ A2UI is a declarative protocol that allows autonomous agents and large language 
 
 ## Capabilities
 
-* Multi-version A2UI protocol support (`v1.0`, `v0.9.1`, `v0.9`) via `IVersionAdapter`, `SurfaceManager`, RFC 6901 JSON Pointer `DataModel`, `DynamicValue` bindings (`@path`, `@call`, `@index`, `ObjectValue`), bidirectional `RpcHandler`, and UAX 31 / composition validation.
-* Native Avalonia `12.1.5` renderer (`Blazejewicz.A2Ui.Avalonia`) with 18 Basic Catalog controls, 26 built-in functions, render-time version scoping, media URL security filtering, and in-place control updates.
+* Multi-version A2UI protocol support (`v1.0`, `v0.9.1`, `v0.9`) via `IVersionAdapter`, `SurfaceManager`, RFC 6901 JSON Pointer `DataModel`, `DynamicValue` bindings (`@path`, `@call`, `@index`, `ObjectValue`), 26 built-in functions (`FunctionRegistry`, `BuiltInFunctions`, `ExpressionParser`), bidirectional `RpcHandler`, and UAX 31 / composition validation.
+* Native Avalonia `12.1.5` renderer (`Blazejewicz.A2Ui.Avalonia`) with 18 Basic Catalog controls (`CatalogRegistry`, `Controls/A2UiSurface.cs`), render-time version scoping, media URL security filtering, and in-place control updates.
 * Streaming AG-UI integration (`Blazejewicz.A2Ui.AgUi.Protocol`) providing `SseEventParser` and `ToolCallArgsAccumulator` over `AGUI.Abstractions` (`1.0.1`).
 * Connected A2A desktop client (`Blazejewicz.A2Ui.Avalonia.Shell`) built on `A2A.V0_3` (`1.0.0-preview4`), and offline specification replay harness (`Blazejewicz.A2Ui.Avalonia.Gallery`) with 79 `v0.9`, `v0.9.1`, and `v1.0` examples.
 * Structured `[LoggerMessage]` logging and `ActivitySource` distributed tracing across all layers (see [`TELEMETRY.md`](TELEMETRY.md)).
@@ -27,13 +27,14 @@ flowchart TD
         Adapter["IVersionAdapter<br/>(V09VersionAdapter / V10VersionAdapter)"]
         SM["SurfaceManager<br/>(Surface + CompositionValidator)"]
         DM["DataModel<br/>(RFC 6901 JSON Pointers)"]
+        Functions["FunctionRegistry (26 Functions)<br/>+ ExpressionParser"]
         RPC["RpcHandler<br/>(Bidirectional Function Execution)"]
     end
 
     subgraph Avalonia["Desktop Renderer (Blazejewicz.A2Ui.Avalonia)"]
         Bridge["AgentEventBridge<br/>(Async Channel + UI Thread Dispatch)"]
         Renderer["A2UiRenderer<br/>(Control Cache + In-Place Updates)"]
-        Registries["CatalogRegistry (18 Controls)<br/>+ FunctionRegistry (26 Functions)"]
+        Registry["CatalogRegistry (18 Controls)"]
         Surface["A2UiSurface<br/>(Avalonia UserControl)"]
     end
 
@@ -44,7 +45,8 @@ flowchart TD
     SM --> DM
     SM --> RPC
     SM --> Renderer
-    Renderer --> Registries
+    Renderer --> Registry
+    Renderer --> Functions
     Renderer --> Surface
     Surface -- "InputHelper write-back" --> DM
     Surface -- "UserActionFired" --> RPC
@@ -59,16 +61,17 @@ flowchart TD
 
 ## Catalog and built-in functions
 
-### Basic Catalog controls (`CatalogRegistry`)
+### Basic Catalog controls (`CatalogRegistry` in `Blazejewicz.A2Ui.Avalonia`)
 
 | Category | Components |
 |----------|------------|
 | Display | `Text`, `Image`, `Icon`, `Video`, `AudioPlayer`, `Divider` |
 | Layout | `Row`, `Column`, `List`, `Card`, `Tabs`, `Modal` |
 | Interactive | `Button`, `TextField`, `CheckBox`, `ChoicePicker`, `DateTimeInput`, `Slider` |
-| Extensions | `Table`, `Surface` |
 
-### Built-in functions (`FunctionRegistry`)
+### Built-in functions (`FunctionRegistry` & `ExpressionParser` in `Blazejewicz.A2Ui.Core`)
+
+`FunctionRegistry.CreateDefault()` registers 25 built-in functions and `ExpressionParser` evaluates `${...}` / `formatString` interpolation (26 functions total):
 
 | Category | Functions |
 |----------|-----------|
@@ -86,9 +89,9 @@ The solution (`A2Ui.slnx`) contains 9 projects:
 
 | Project / Package ID | Target Framework(s) | Path | Description |
 |----------------------|---------------------|------|-------------|
-| `Blazejewicz.A2Ui.Core` | `net8.0;net10.0` | `src/A2Ui.Core/` | Core protocol models, version adapters, surface state, data model, validation, and RPC handler |
+| `Blazejewicz.A2Ui.Core` | `net8.0;net10.0` | `src/A2Ui.Core/` | Core protocol models, version adapters, surface state, data model, 26 built-in functions, validation, and RPC handler |
 | `Blazejewicz.A2Ui.AgUi.Protocol` | `net8.0;net10.0` | `src/AgUi.Protocol/` | AG-UI SSE stream parser and tool-call delta accumulator built on `AGUI.Abstractions` |
-| `Blazejewicz.A2Ui.Avalonia` | `net10.0` | `src/A2Ui.Avalonia/` | Native Avalonia `12.1.5` renderer, Basic Catalog controls, built-in functions, and event bridge |
+| `Blazejewicz.A2Ui.Avalonia` | `net10.0` | `src/A2Ui.Avalonia/` | Native Avalonia `12.1.5` renderer, 18 Basic Catalog controls (`CatalogRegistry`, `Controls/A2UiSurface.cs`), and event bridge |
 | `Blazejewicz.A2Ui.Avalonia.Gallery` | `net10.0` | `samples/A2Ui.Avalonia.Gallery/` | Offline desktop gallery with 79 specification examples across `v0.9`, `v0.9.1`, and `v1.0` |
 | `Blazejewicz.A2Ui.Avalonia.Shell` | `net10.0` | `samples/A2Ui.Avalonia.Shell/` | Connected desktop client communicating with A2A agents over JSON-RPC using `A2A.V0_3` |
 | `Blazejewicz.A2Ui.Core.Tests` | `net8.0;net10.0` | `tests/A2Ui.Core.Tests/` | Unit and integration tests for core protocol, adapters, data model, and RPC |

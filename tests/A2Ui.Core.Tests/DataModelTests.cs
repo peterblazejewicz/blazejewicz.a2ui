@@ -5,7 +5,7 @@ using Blazejewicz.A2Ui.Core.Bindings;
 using Blazejewicz.A2Ui.Core.Messages;
 using Blazejewicz.A2Ui.Core.Surfaces;
 
-namespace Blazejewicz.A2Ui.Core.Tests.A2Ui;
+namespace Blazejewicz.A2Ui.Core.Tests;
 
 public sealed class DataModelTests
 {
@@ -751,5 +751,142 @@ public sealed class DataModelTests
 
         Assert.Equal("basePath", ex.ParamName);
         Assert.Contains("absolute JSON Pointer", ex.Message);
+    }
+
+    // ── Root reads & slash normalization (A-08 / conformance data_model.yaml) ──
+
+    [Theory]
+    [InlineData("/")]
+    [InlineData("")]
+    [InlineData("///")]
+    public void Resolve_RootPaths_ReturnsRootSnapshotJson(string rootPath)
+    {
+        var dm = new DataModel();
+        Assert.Equal("{}", dm.Resolve(DynamicValue.FromPath(rootPath)));
+
+        dm.SetSnapshot(JsonSerializer.SerializeToElement(new { newRoot = "foo" }));
+        Assert.Equal("{\"newRoot\":\"foo\"}", dm.Resolve(DynamicValue.FromPath(rootPath)));
+    }
+
+    [Fact]
+    public void ApplyAndResolve_TrailingAndConsecutiveSlashes_NormalizeSegments()
+    {
+        var dm = new DataModel();
+
+        dm.Apply("/foo/", JsonSerializer.SerializeToElement("bar"));
+        Assert.Equal("bar", dm.Resolve(DynamicValue.FromPath("/foo")));
+        Assert.Equal("bar", dm.Resolve(DynamicValue.FromPath("/foo/")));
+
+        dm.Apply("//a///b//", JsonSerializer.SerializeToElement("val"));
+        Assert.Equal("val", dm.Resolve(DynamicValue.FromPath("/a/b")));
+        Assert.Equal("val", dm.Resolve(DynamicValue.FromPath("//a///b//")));
+
+        dm.Delete("//a///b//");
+        Assert.Null(dm.Resolve(DynamicValue.FromPath("/a/b")));
+    }
+
+    // ── RFC 6901 §4 array index grammar & MaxArrayIndex bounds (A-07) ──
+
+    [Theory]
+    [InlineData("/items/01")]
+    [InlineData("/items/00")]
+    [InlineData("/items/-1")]
+    [InlineData("/items/+1")]
+    [InlineData("/items/01/nested")]
+    public void ApplyAndResolve_InvalidArrayIndexSyntax_AbsentOnReadAndThrowsOnWrite(string path)
+    {
+        var dm = new DataModel();
+        dm.SetSnapshot(JsonSerializer.SerializeToElement(new { items = new[] { "a", "b", "c" } }));
+
+        Assert.Null(dm.Resolve(DynamicValue.FromPath(path)));
+
+        var ex = Assert.Throws<JsonException>(() => dm.Apply(path, JsonSerializer.SerializeToElement("invalid")));
+        Assert.Contains("non-numeric segment", ex.Message);
+    }
+
+    [Fact]
+    public void Apply_ArrayIndexAtAndAboveMaxBound_EnforcesMaxArrayIndex10000()
+    {
+        var dm = new DataModel();
+        dm.SetSnapshot(JsonSerializer.SerializeToElement(new { items = new[] { "a", "b", "c" } }));
+
+        dm.Apply("/items/10000", JsonSerializer.SerializeToElement("max_element"));
+        Assert.Equal("max_element", dm.Resolve(DynamicValue.FromPath("/items/10000")));
+
+        Assert.Throws<JsonException>(() => dm.Apply("/items/10001", JsonSerializer.SerializeToElement("x")));
+        Assert.Throws<JsonException>(() => dm.Apply("/items/999999999", JsonSerializer.SerializeToElement("x")));
+        Assert.Throws<JsonException>(() => dm.Apply("/items/10001/name", JsonSerializer.SerializeToElement("x")));
+        Assert.Throws<JsonException>(() => dm.Apply("/newArray/10000000", JsonSerializer.SerializeToElement("x")));
+        Assert.Throws<JsonException>(() => dm.Apply("/newArray/10000000/field", JsonSerializer.SerializeToElement("x")));
+        Assert.Null(dm.Resolve(DynamicValue.FromPath("/newArray")));
+    }
+
+    [Fact]
+    public void SurfaceManager_UpdateDataModelWithInvalidEscape_HandlesFormatException()
+    {
+        const string CreateJson = """
+            {
+                "version": "1.0",
+                "createSurface": {
+                    "surfaceId": "s1",
+                    "components": [
+                        { "component": "Text", "id": "root", "text": "Hello" }
+                    ]
+                }
+            }
+            """;
+        const string InvalidEscapeUpdateJson = """
+            {
+                "version": "1.0",
+                "updateDataModel": {
+                    "surfaceId": "s1",
+                    "path": "/~2invalid",
+                    "value": "bad"
+                }
+            }
+            """;
+
+        var lenient = new SurfaceManager(options: new SurfaceManagerOptions { StrictMode = false });
+        lenient.Process(CreateJson);
+        lenient.Process(InvalidEscapeUpdateJson);
+
+        var strict = new SurfaceManager(options: new SurfaceManagerOptions { StrictMode = true });
+        strict.Process(CreateJson);
+        var ex = Assert.Throws<A2UiMessageValidationException>(() => strict.Process(InvalidEscapeUpdateJson));
+        Assert.IsType<FormatException>(ex.InnerException);
+    }
+
+    [Fact]
+    public void ApplyAndSetSnapshot_WithDisposableJsonDocument_ResolvesAccuratelyAfterDispose()
+    {
+        var dm = new DataModel();
+
+        using (var snapshotDoc = JsonDocument.Parse("""{"profile":{"name":"Ada"},"items":[10,20]}"""))
+        {
+            dm.SetSnapshot(snapshotDoc.RootElement);
+        }
+
+        using (var objectDoc = JsonDocument.Parse("""{"city":"London","active":true}"""))
+        {
+            dm.Apply("/profile/address", objectDoc.RootElement);
+        }
+
+        using (var arrayDoc = JsonDocument.Parse("""["alpha","beta"]"""))
+        {
+            dm.Apply("/tags", arrayDoc.RootElement);
+        }
+
+        using (var scalarDoc = JsonDocument.Parse("""42"""))
+        {
+            dm.Apply("/count", scalarDoc.RootElement);
+        }
+
+        // All source JsonDocuments are now disposed; pooled buffers must not back DataModel nodes.
+        Assert.Equal("Ada", dm.Resolve(DynamicValue.FromPath("/profile/name")));
+        Assert.Equal("London", dm.Resolve(DynamicValue.FromPath("/profile/address/city")));
+        Assert.Equal("true", dm.Resolve(DynamicValue.FromPath("/profile/address/active")));
+        Assert.Equal(2, dm.GetArrayLength("/tags"));
+        Assert.Equal("beta", dm.Resolve(DynamicValue.FromPath("/tags/1")));
+        Assert.Equal("42", dm.Resolve(DynamicValue.FromPath("/count")));
     }
 }

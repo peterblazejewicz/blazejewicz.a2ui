@@ -25,7 +25,7 @@ public sealed class ListCatalogEntry : ICatalogEntry
         var orientation = typed.Direction == "horizontal" ? Orientation.Horizontal : Orientation.Vertical;
 
         var panel = new StackPanel { Orientation = orientation, Spacing = 4 };
-        PopulateChildren(panel, typed, orientation, context);
+        PopulateChildren(panel, typed, orientation, context.RenderChildren(typed.Id));
 
         return new ScrollViewer { Content = panel };
     }
@@ -45,8 +45,15 @@ public sealed class ListCatalogEntry : ICatalogEntry
             return false;
         }
 
+        bool isStyled = newOrientation == Orientation.Vertical && typed.ListStyle is "ordered" or "unordered";
+        var children = context.RenderChildren(typed.Id).ToList();
+        if (!isStyled && LayoutHelper.SequenceReferenceEqual(panel.Children, children))
+        {
+            return true;
+        }
+
         panel.Children.Clear();
-        PopulateChildren(panel, typed, newOrientation, context);
+        PopulateChildren(panel, typed, newOrientation, children);
 
         return true;
     }
@@ -55,13 +62,14 @@ public sealed class ListCatalogEntry : ICatalogEntry
         StackPanel panel,
         ListComponent typed,
         Orientation orientation,
-        IRenderContext context
+        IEnumerable<Control> children
     )
     {
         bool isStyled = orientation == Orientation.Vertical && typed.ListStyle is "ordered" or "unordered";
         int index = 0;
-        foreach (var child in context.RenderChildren(typed.Id))
+        foreach (var child in children)
         {
+            RenderContext.DetachFromParent(child);
             if (isStyled)
             {
                 var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
@@ -96,8 +104,14 @@ public sealed class TabsCatalogEntry : ICatalogEntry
         {
             foreach (var tab in tabs)
             {
+                Control? content = context.RenderChild(tab.Child);
+                if (content is not null)
+                {
+                    RenderContext.DetachFromParent(content);
+                }
+
                 tc.Items.Add(
-                    new TabItem { Header = context.Resolve(tab.Title), Content = context.RenderChild(tab.Child) }
+                    new TabItem { Header = context.Resolve(tab.Title), Content = content }
                 );
             }
         }
@@ -127,7 +141,16 @@ public sealed class TabsCatalogEntry : ICatalogEntry
             }
 
             tabItem.Header = context.Resolve(tabs[i].Title);
-            tabItem.Content = context.RenderChild(tabs[i].Child);
+            Control? content = context.RenderChild(tabs[i].Child);
+            if (!ReferenceEquals(tabItem.Content, content))
+            {
+                if (content is not null)
+                {
+                    RenderContext.DetachFromParent(content);
+                }
+
+                tabItem.Content = content;
+            }
         }
 
         return true;
@@ -156,6 +179,7 @@ public sealed class ModalCatalogEntry : ICatalogEntry
             triggerControl = context.RenderChild(typed.Trigger);
             if (triggerControl is not null)
             {
+                RenderContext.DetachFromParent(triggerControl);
                 container.Children.Add(triggerControl);
             }
         }
@@ -185,6 +209,7 @@ public sealed class ModalCatalogEntry : ICatalogEntry
                 renderedContent = context.RenderChild(typed.Content);
                 if (renderedContent is not null)
                 {
+                    RenderContext.DetachFromParent(renderedContent);
                     contentColumn.Children.Add(renderedContent);
                 }
             }
@@ -246,11 +271,13 @@ public sealed class ModalCatalogEntry : ICatalogEntry
                     renderedContent = context.RenderChild(typed.Content);
                     if (renderedContent is not null)
                     {
+                        RenderContext.DetachFromParent(renderedContent);
                         contentColumn.Children.Add(renderedContent);
                     }
                 }
                 else if (!contentColumn.Children.Contains(renderedContent))
                 {
+                    RenderContext.DetachFromParent(renderedContent);
                     contentColumn.Children.Add(renderedContent);
                 }
 

@@ -2,7 +2,7 @@ using Blazejewicz.A2Ui.Core.Actions;
 using Blazejewicz.A2Ui.Core.Bindings;
 using Blazejewicz.A2Ui.Core.Messages;
 
-namespace Blazejewicz.A2Ui.Core.Tests.A2Ui;
+namespace Blazejewicz.A2Ui.Core.Tests;
 
 public sealed class ComponentActionValidateTests
 {

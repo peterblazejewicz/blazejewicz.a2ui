@@ -15,7 +15,7 @@ namespace Blazejewicz.A2Ui.TestHelpers;
 /// using var listener = new TestActivityListener("A2Ui.Core", "A2Ui.Avalonia.Renderer");
 /// sut.DoWork();
 /// var span = listener.StoppedActivities
-///     .First(a => a.OperationName == "Surface.createSurface");
+///     .First(a => a.OperationName == "Surface.CreateSurface");
 /// Assert.Equal("default", span.GetTagItem("a2ui.surface_id"));
 /// </code>
 /// Disposal unregisters the listener from <see cref="ActivitySource"/>

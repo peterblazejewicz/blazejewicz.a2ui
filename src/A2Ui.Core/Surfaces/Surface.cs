@@ -8,6 +8,12 @@ namespace Blazejewicz.A2Ui.Core.Surfaces;
 /// <summary>
 /// Represents a live A2UI surface with its component tree and data model.
 /// </summary>
+/// <remarks>
+/// <see cref="Surface"/> is not thread-safe. In UI hosts, all component and <see cref="DataModel"/> mutations
+/// and reads must be serialized onto the owning host/UI thread (for example, Avalonia <c>Dispatcher.UIThread</c>
+/// or Blazor <c>InvokeAsync</c>), while off-thread parsing and validation can use
+/// <see cref="SurfaceManager.ParseAndAdapt(string)"/>.
+/// </remarks>
 /// <param name="surfaceId">Unique identifier for this surface.</param>
 /// <param name="catalogId">Optional catalog identifier defining the default component set.</param>
 public sealed class Surface(string surfaceId, string? catalogId = null)

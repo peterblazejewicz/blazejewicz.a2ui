@@ -8,7 +8,7 @@ using Blazejewicz.A2Ui.Core.Surfaces;
 using Blazejewicz.A2Ui.TestHelpers;
 using Microsoft.Extensions.Logging;
 
-namespace Blazejewicz.A2Ui.Core.Tests.A2Ui;
+namespace Blazejewicz.A2Ui.Core.Tests;
 
 /// <summary>
 /// Representative telemetry scenarios that assert on
@@ -191,7 +191,7 @@ public sealed class TelemetryScenarioTests
         using var provider = new TestLoggerProvider();
         using var factory = provider.CreateFactory();
         using var listener = new TestActivityListener(CoreActivitySource);
-        var sm = new SurfaceManager(factory);
+        var sm = new SurfaceManager(factory, new SurfaceManagerOptions { StrictMode = false });
 
         sm.Process(
             new A2UiMessage
@@ -255,7 +255,7 @@ public sealed class TelemetryScenarioTests
         // Arrange
         using var provider = new TestLoggerProvider();
         using var factory = provider.CreateFactory();
-        var sm = new SurfaceManager(factory);
+        var sm = new SurfaceManager(factory, new SurfaceManagerOptions { StrictMode = false });
 
         sm.Process(
             new A2UiMessage
@@ -313,5 +313,41 @@ public sealed class TelemetryScenarioTests
         var surface = sm.GetSurface("s-baddata");
         Assert.NotNull(surface);
         Assert.Equal("Alice", surface!.DataModel.Resolve(DynamicValue.FromPath("/user")));
+    }
+
+    [Fact]
+    public void Process_V10JsonOperations_EmitsPascalCaseSpansAndLogMessageTypes()
+    {
+        using var provider = new TestLoggerProvider();
+        using var factory = provider.CreateFactory();
+        using var listener = new TestActivityListener(CoreActivitySource);
+        var sm = new SurfaceManager(factory);
+
+        sm.Process(
+            """{"version":"1.0","createSurface":{"surfaceId":"s-v10-tel","catalogId":"https://a2ui.org/catalogs/basic/v1/catalog.json"}}"""
+        );
+        sm.Process(
+            """{"version":"1.0","updateComponents":{"surfaceId":"s-v10-tel","components":[{"id":"root","component":"Text","text":"Hi"}]}}"""
+        );
+        sm.Process("""{"version":"1.0","updateDataModel":{"surfaceId":"s-v10-tel","path":"/k","value":"v"}}""");
+        sm.Process("""{"version":"1.0","deleteSurface":{"surfaceId":"s-v10-tel"}}""");
+
+        var spans = listener
+            .StoppedActivities.Where(a =>
+                a.Source.Name == CoreActivitySource && Equals(a.GetTagItem("a2ui.surface_id"), "s-v10-tel")
+            )
+            .ToList();
+
+        Assert.Equal(4, spans.Count);
+        Assert.Equal("CreateSurface", spans.Single(a => a.OperationName == "Surface.CreateSurface").GetTagItem("a2ui.message_type"));
+        Assert.Equal("UpdateComponents", spans.Single(a => a.OperationName == "Surface.UpdateComponents").GetTagItem("a2ui.message_type"));
+        Assert.Equal("UpdateDataModel", spans.Single(a => a.OperationName == "Surface.UpdateDataModel").GetTagItem("a2ui.message_type"));
+        Assert.Equal("DeleteSurface", spans.Single(a => a.OperationName == "Surface.DeleteSurface").GetTagItem("a2ui.message_type"));
+
+        var dispatched = provider
+            .Entries.Where(e => e.CategoryName == SurfaceManagerCategory && e.EventId.Id == 9)
+            .Select(e => e.Properties["MessageType"]?.ToString())
+            .ToList();
+        Assert.Equal(["CreateSurface", "UpdateComponents", "UpdateDataModel", "DeleteSurface"], dispatched);
     }
 }

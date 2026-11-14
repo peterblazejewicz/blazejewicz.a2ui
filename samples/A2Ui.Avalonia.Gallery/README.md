@@ -1,6 +1,6 @@
 # A2UI local gallery — Avalonia desktop
 
-A native Avalonia `12.1.5` desktop application that renders 79 A2UI specification examples across `v0.9`, `v0.9.1`, and `v1.0` using the `A2Ui.Avalonia` renderer library.
+A native Avalonia `12.1.5` desktop application that renders 79 A2UI specification examples across `v0.9`, `v0.9.1`, and `v1.0` using the `Blazejewicz.A2Ui.Avalonia` renderer library.
 
 ## Features
 

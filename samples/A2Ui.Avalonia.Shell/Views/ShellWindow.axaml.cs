@@ -61,7 +61,7 @@ public partial class ShellWindow : Window
             }
             catch (Exception ex)
             {
-                this._logger.LogError(ex, "Failed to initialize shell");
+                ShellWindowLog.ShellInitializationFailed(this._logger, ex);
             }
         }
 
@@ -140,7 +140,7 @@ public partial class ShellWindow : Window
         }
         catch (Exception ex)
         {
-            this._logger.LogError(ex, "Error handling user action {Action}", e.EventName);
+            ShellWindowLog.UserActionHandlingFailed(this._logger, ex, e.EventName);
         }
     }
 
@@ -166,4 +166,13 @@ public partial class ShellWindow : Window
             surface.Tag = null;
         }
     }
+}
+
+internal static partial class ShellWindowLog
+{
+    [LoggerMessage(EventId = 1, Level = LogLevel.Error, Message = "Failed to initialize shell")]
+    public static partial void ShellInitializationFailed(ILogger logger, Exception ex);
+
+    [LoggerMessage(EventId = 2, Level = LogLevel.Error, Message = "Error handling user action {Action}")]
+    public static partial void UserActionHandlingFailed(ILogger logger, Exception ex, string action);
 }

@@ -99,8 +99,8 @@ public sealed class IncrementalListTests
 
         // The action context should have resolved the scoped "title" path
         // for the first restaurant (The Golden Fork)
-        var context = Assert.IsType<Dictionary<string, string?>>(result.ActionLog[0].Payload);
-        Assert.Equal("The Golden Fork", context["restaurantName"]);
+        var context = Assert.IsType<Dictionary<string, JsonElement>>(result.ActionLog[0].Payload);
+        Assert.Equal("The Golden Fork", context["restaurantName"].GetString());
     }
 
     [AvaloniaFact]

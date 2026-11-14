@@ -259,6 +259,7 @@ public abstract record DynamicValue
     );
 
     /// <summary>Pattern matches over the 6 primitive, array, path, and function union cases.</summary>
+    [Obsolete("Use the 7-parameter overload that includes onObject.")]
     public virtual T Match<T>(
         Func<StringValue, T> onString,
         Func<NumberValue, T> onNumber,
@@ -280,6 +281,7 @@ public abstract record DynamicValue
     );
 
     /// <summary>Executes side-effects over the 6 primitive, array, path, and function union cases.</summary>
+    [Obsolete("Use the 7-parameter overload that includes onObject.")]
     public virtual void Switch(
         Action<StringValue> onString,
         Action<NumberValue> onNumber,

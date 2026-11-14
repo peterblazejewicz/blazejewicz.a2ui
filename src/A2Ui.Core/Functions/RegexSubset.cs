@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Collections.Frozen;
 using System.Globalization;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -105,24 +106,25 @@ public static class RegexSubset
         new(0x2028, 0x2029),
     ];
 
-    private static readonly HashSet<int> s_syntaxChars =
-    [
-        0x5e, // ^
-        0x24, // $
-        0x5c, // \
-        0x2e, // .
-        0x2a, // *
-        0x2b, // +
-        0x3f, // ?
-        0x28, // (
-        0x29, // )
-        0x5b, // [
-        0x5d, // ]
-        0x7b, // {
-        0x7d, // }
-        0x7c, // |
-        0x2f, // /
-    ];
+    private static readonly FrozenSet<int> s_syntaxChars = FrozenSet.ToFrozenSet(
+        [
+            0x5e, // ^
+            0x24, // $
+            0x5c, // \
+            0x2e, // .
+            0x2a, // *
+            0x2b, // +
+            0x3f, // ?
+            0x28, // (
+            0x29, // )
+            0x5b, // [
+            0x5d, // ]
+            0x7b, // {
+            0x7d, // }
+            0x7c, // |
+            0x2f, // /
+        ]
+    );
 
     private static readonly Dictionary<int, int> s_controlEscapes = new()
     {

@@ -1,5 +1,4 @@
 using System.Text.Json;
-using Blazejewicz.A2Ui.Core.Bindings;
 using Blazejewicz.A2Ui.Core.Components;
 using Blazejewicz.A2Ui.Core.Messages;
 using Blazejewicz.A2Ui.Core.Validation;
@@ -21,6 +20,48 @@ public sealed class V10VersionAdapter : IVersionAdapter
         return this.AdaptAgentToRenderer(doc.RootElement);
     }
 
+    /// <summary>
+    /// Adapts an in-memory <see cref="AgentToRendererMessage"/> instance into an internal operation
+    /// without re-serializing through JSON (preserving explicit <c>null</c> values on <c>updateDataModel</c>).
+    /// </summary>
+    public InternalOperation AdaptAgentToRenderer(AgentToRendererMessage message)
+    {
+        ArgumentNullException.ThrowIfNull(message);
+        message.Validate();
+
+        if (message.CreateSurface is { } cs)
+        {
+            return MapCreateSurfaceOp(cs);
+        }
+
+        if (message.UpdateComponents is { } uc)
+        {
+            return MapUpdateComponentsOp(uc);
+        }
+
+        if (message.UpdateDataModel is { } ud)
+        {
+            return MapUpdateDataModelOp(ud);
+        }
+
+        if (message.DeleteSurface is { } ds)
+        {
+            return MapDeleteSurfaceOp(ds);
+        }
+
+        if (message.CallRendererFunction is { } crf)
+        {
+            return MapCallRendererFunctionOp(crf);
+        }
+
+        if (message.AgentFunctionResponse is { } afr)
+        {
+            return MapAgentFunctionResponseOp(afr);
+        }
+
+        throw new A2UiMessageValidationException("No valid operation found in AgentToRendererMessage.");
+    }
+
     /// <inheritdoc />
     public InternalOperation AdaptAgentToRenderer(JsonElement root)
     {
@@ -29,19 +70,26 @@ public sealed class V10VersionAdapter : IVersionAdapter
             throw new A2UiMessageValidationException("Message envelope must be a JSON object.");
         }
 
-        if (!root.TryGetProperty("version", out var vEl) || vEl.GetString() != A2UiProtocol.Version10)
+        if (
+            !root.TryGetProperty("version", out var vEl)
+            || vEl.ValueKind != JsonValueKind.String
+            || vEl.GetString() != A2UiProtocol.Version10
+        )
         {
+            string actual =
+                vEl.ValueKind == JsonValueKind.String ? vEl.GetString() ?? "(null)"
+                : vEl.ValueKind == JsonValueKind.Undefined ? "(missing)"
+                : vEl.GetRawText();
             throw new A2UiMessageValidationException(
-                $"Unsupported version '{vEl.GetString()}'; expected '{A2UiProtocol.Version10}'."
+                $"Unsupported version '{actual}'; expected '{A2UiProtocol.Version10}'."
             );
         }
 
-        using var scope = DynamicValueConverter.EnterVersionScope(A2UiProtocol.Version10);
         AgentToRendererMessage message;
         try
         {
             message =
-                JsonSerializer.Deserialize(root.GetRawText(), A2UiJsonSerializerContext.Default.AgentToRendererMessage)
+                JsonSerializer.Deserialize(root, A2UiJsonUtilities.V10Context.AgentToRendererMessage)
                 ?? throw new A2UiMessageValidationException("Failed to deserialize AgentToRendererMessage from JSON.");
         }
         catch (JsonException ex)
@@ -53,7 +101,58 @@ public sealed class V10VersionAdapter : IVersionAdapter
 
         if (root.TryGetProperty("createSurface", out var csElement) && csElement.ValueKind == JsonValueKind.Object)
         {
-            if (csElement.TryGetProperty("theme", out var themeEl) && themeEl.ValueKind != JsonValueKind.Null)
+            return MapCreateSurfaceOp(message.CreateSurface!, csElement);
+        }
+
+        if (root.TryGetProperty("updateComponents", out var ucElement) && ucElement.ValueKind == JsonValueKind.Object)
+        {
+            return MapUpdateComponentsOp(message.UpdateComponents!, ucElement);
+        }
+
+        if (root.TryGetProperty("updateDataModel", out var udElement) && udElement.ValueKind == JsonValueKind.Object)
+        {
+            if (!udElement.TryGetProperty("value", out var valProp))
+            {
+                throw new A2UiMessageValidationException("Property 'value' is required on v1.0 updateDataModel.");
+            }
+
+            return MapUpdateDataModelOp(message.UpdateDataModel!, valProp);
+        }
+
+        if (root.TryGetProperty("deleteSurface", out var dsElement) && dsElement.ValueKind == JsonValueKind.Object)
+        {
+            return MapDeleteSurfaceOp(message.DeleteSurface!);
+        }
+
+        if (
+            root.TryGetProperty("callRendererFunction", out var crfElement)
+            && crfElement.ValueKind == JsonValueKind.Object
+        )
+        {
+            return MapCallRendererFunctionOp(message.CallRendererFunction!);
+        }
+
+        if (
+            root.TryGetProperty("agentFunctionResponse", out var afrElement)
+            && afrElement.ValueKind == JsonValueKind.Object
+        )
+        {
+            return MapAgentFunctionResponseOp(message.AgentFunctionResponse!);
+        }
+
+        throw new A2UiMessageValidationException("No valid operation found in AgentToRendererMessage.");
+    }
+
+    private static CreateSurfaceOp MapCreateSurfaceOp(CreateSurface cs, JsonElement csElement = default)
+    {
+        if (cs.Theme is { } themeEl && themeEl.ValueKind != JsonValueKind.Null)
+        {
+            throw new A2UiMessageValidationException("Property 'theme' is forbidden in v1.0 createSurface.");
+        }
+
+        if (csElement.ValueKind == JsonValueKind.Object)
+        {
+            if (csElement.TryGetProperty("theme", out var rawThemeEl) && rawThemeEl.ValueKind != JsonValueKind.Null)
             {
                 throw new A2UiMessageValidationException("Property 'theme' is forbidden in v1.0 createSurface.");
             }
@@ -77,111 +176,104 @@ public sealed class V10VersionAdapter : IVersionAdapter
                     );
                 }
             }
+        }
 
-            var cs = message.CreateSurface!;
-            if (csElement.TryGetProperty("dataModel", out var dmEl) && dmEl.ValueKind != JsonValueKind.Null)
-            {
-                if (dmEl.ValueKind != JsonValueKind.Object)
-                {
-                    throw new A2UiMessageValidationException(
-                        "Property 'dataModel' in v1.0 createSurface must be a JSON object."
-                    );
-                }
-
-                UpdateDataModel.ValidateNoReservedKeys(dmEl);
-            }
-
-            if (cs.Components is { } comps)
-            {
-                ValidateComponentsV10(comps, csElement);
-            }
-            else if (csElement.TryGetProperty("components", out var rawComps) && rawComps.ValueKind != JsonValueKind.Null)
+        if (cs.DataModel is { } dmEl && dmEl.ValueKind != JsonValueKind.Null)
+        {
+            if (dmEl.ValueKind != JsonValueKind.Object)
             {
                 throw new A2UiMessageValidationException(
-                    "Property 'components' in v1.0 createSurface must be an array."
+                    "Property 'dataModel' in v1.0 createSurface must be a JSON object."
                 );
             }
 
-            return new CreateSurfaceOp
-            {
-                SurfaceId = cs.SurfaceId,
-                CatalogId = cs.CatalogId,
-                Components = cs.Components,
-                DataModel = cs.DataModel?.Clone(),
-                Theme = null,
-                SendDataModel = cs.SendDataModel ?? false,
-                Metadata = cs.Metadata,
-                EnforceUniqueness = true,
-                ProtocolVersion = A2UiProtocol.Version10,
-            };
+            UpdateDataModel.ValidateNoReservedKeys(dmEl);
         }
 
-        if (root.TryGetProperty("updateComponents", out var ucElement) && ucElement.ValueKind == JsonValueKind.Object)
+        if (cs.Components is { } comps)
         {
-            var uc = message.UpdateComponents!;
-            ValidateComponentsV10(uc.Components, ucElement);
-            return new UpdateComponentsOp { SurfaceId = uc.SurfaceId, Components = uc.Components };
+            ValidateComponentsV10(comps, csElement);
         }
-
-        if (root.TryGetProperty("updateDataModel", out var udElement) && udElement.ValueKind == JsonValueKind.Object)
-        {
-            if (!udElement.TryGetProperty("value", out var valProp))
-            {
-                throw new A2UiMessageValidationException("Property 'value' is required on v1.0 updateDataModel.");
-            }
-
-            UpdateDataModel.ValidateNoReservedKeys(valProp);
-
-            var ud = message.UpdateDataModel!;
-            bool deleteOnNull =
-                valProp.ValueKind == JsonValueKind.Null && !string.IsNullOrEmpty(ud.Path) && ud.Path != "/";
-
-            return new UpdateDataModelOp
-            {
-                SurfaceId = ud.SurfaceId,
-                Path = ud.Path,
-                Value = valProp.Clone(),
-                DeleteOnNull = deleteOnNull,
-            };
-        }
-
-        if (root.TryGetProperty("deleteSurface", out var dsElement) && dsElement.ValueKind == JsonValueKind.Object)
-        {
-            var ds = message.DeleteSurface!;
-            return new DeleteSurfaceOp { SurfaceId = ds.SurfaceId };
-        }
-
-        if (
-            root.TryGetProperty("callRendererFunction", out var crfElement)
-            && crfElement.ValueKind == JsonValueKind.Object
+        else if (
+            csElement.ValueKind == JsonValueKind.Object
+            && csElement.TryGetProperty("components", out var rawComps)
+            && rawComps.ValueKind != JsonValueKind.Null
         )
         {
-            var crf = message.CallRendererFunction!;
-            crf.Validate();
-            return new CallRendererFunctionOp
-            {
-                SurfaceId = crf.SurfaceId,
-                FunctionCallId = crf.FunctionCallId,
-                CallFunction = crf.CallFunction,
-            };
+            throw new A2UiMessageValidationException(
+                "Property 'components' in v1.0 createSurface must be an array."
+            );
         }
 
-        if (
-            root.TryGetProperty("agentFunctionResponse", out var afrElement)
-            && afrElement.ValueKind == JsonValueKind.Object
-        )
+        return new CreateSurfaceOp
         {
-            var afr = message.AgentFunctionResponse!;
-            afr.Validate();
-            return new AgentFunctionResponseOp
-            {
-                FunctionCallId = afr.FunctionCallId,
-                Value = afr.Value,
-                Error = afr.Error,
-            };
+            SurfaceId = cs.SurfaceId,
+            CatalogId = cs.CatalogId,
+            Components = cs.Components,
+            DataModel = cs.DataModel?.Clone(),
+            Theme = null,
+            SendDataModel = cs.SendDataModel ?? false,
+            Metadata = cs.Metadata,
+            EnforceUniqueness = true,
+            ProtocolVersion = A2UiProtocol.Version10,
+        };
+    }
+
+    private static UpdateComponentsOp MapUpdateComponentsOp(UpdateComponents uc, JsonElement ucElement = default)
+    {
+        ValidateComponentsV10(uc.Components, ucElement);
+        return new UpdateComponentsOp
+        {
+            SurfaceId = uc.SurfaceId,
+            Components = uc.Components,
+            ProtocolVersion = A2UiProtocol.Version10,
+        };
+    }
+
+    private static UpdateDataModelOp MapUpdateDataModelOp(UpdateDataModel ud, JsonElement? rawValue = null)
+    {
+        JsonElement? effectiveValue = rawValue ?? ud.Value;
+        if (effectiveValue is { } valEl)
+        {
+            UpdateDataModel.ValidateNoReservedKeys(valEl);
         }
 
-        throw new A2UiMessageValidationException("No valid operation found in AgentToRendererMessage.");
+        bool isNullVal = effectiveValue is null || effectiveValue.Value.ValueKind == JsonValueKind.Null;
+        bool deleteOnNull = isNullVal && !string.IsNullOrEmpty(ud.Path) && ud.Path != "/";
+
+        return new UpdateDataModelOp
+        {
+            SurfaceId = ud.SurfaceId,
+            Path = ud.Path,
+            Value = effectiveValue?.Clone(),
+            DeleteOnNull = deleteOnNull,
+            ProtocolVersion = A2UiProtocol.Version10,
+        };
+    }
+
+    private static DeleteSurfaceOp MapDeleteSurfaceOp(DeleteSurface ds) =>
+        new() { SurfaceId = ds.SurfaceId, ProtocolVersion = A2UiProtocol.Version10 };
+
+    private static CallRendererFunctionOp MapCallRendererFunctionOp(CallRendererFunction crf)
+    {
+        crf.Validate();
+        return new CallRendererFunctionOp
+        {
+            SurfaceId = crf.SurfaceId,
+            FunctionCallId = crf.FunctionCallId,
+            CallFunction = crf.CallFunction,
+        };
+    }
+
+    private static AgentFunctionResponseOp MapAgentFunctionResponseOp(FunctionResponse afr)
+    {
+        afr.Validate();
+        return new AgentFunctionResponseOp
+        {
+            FunctionCallId = afr.FunctionCallId,
+            Value = afr.Value?.Clone(),
+            Error = afr.Error,
+        };
     }
 
     private static void ValidateComponentsV10(IReadOnlyList<A2UiComponent> components, JsonElement parentElement)
@@ -192,7 +284,11 @@ public sealed class V10VersionAdapter : IVersionAdapter
         }
 
         JsonElement? rawCompsArray = null;
-        if (parentElement.TryGetProperty("components", out var ca) && ca.ValueKind == JsonValueKind.Array)
+        if (
+            parentElement.ValueKind == JsonValueKind.Object
+            && parentElement.TryGetProperty("components", out var ca)
+            && ca.ValueKind == JsonValueKind.Array
+        )
         {
             rawCompsArray = ca;
         }

@@ -137,6 +137,7 @@ public sealed partial class GalleryViewModel : ObservableObject, IDisposable
     private void FilterDemoItems()
     {
         this.ResetSurface();
+        this.SelectedItem = null;
         this.DemoItems.Clear();
 
         var matched = this._allItems.Where(item => item.ProtocolVersion == this.SelectedProtocolVersion).ToList();
@@ -209,7 +210,7 @@ public sealed partial class GalleryViewModel : ObservableObject, IDisposable
                     0,
                     $"[Error] Unexpected failure processing message {i}: {ex.GetType().Name}: {ex.Message}"
                 );
-                this._logger.LogError(ex, "Unexpected exception processing message {Index}", i);
+                GalleryViewModelLog.UnexpectedMessageProcessingError(this._logger, ex, i);
             }
         }
 
@@ -218,35 +219,7 @@ public sealed partial class GalleryViewModel : ObservableObject, IDisposable
 
     private void ResetSurface()
     {
-        DemoItem? item = this.SelectedItem;
-        if (item is null)
-        {
-            return;
-        }
-
-        if (this._manager.GetSurface(item.Id) is not null)
-        {
-            if (item.ProtocolVersion is A2UiProtocol.Version10 or "v1.0")
-            {
-                this._manager.Process(
-                    new AgentToRendererMessage
-                    {
-                        Version = A2UiProtocol.Version10,
-                        DeleteSurface = new DeleteSurface { SurfaceId = item.Id },
-                    }
-                );
-            }
-            else
-            {
-                this._manager.Process(
-                    new A2UiMessage
-                    {
-                        Version = A2UiProtocol.Version09,
-                        DeleteSurface = new DeleteSurface { SurfaceId = item.Id },
-                    }
-                );
-            }
-        }
+        this._manager.Clear();
 
         this.ProcessedMessageCount = 0;
         this.CurrentDataModelJson = "{}";
@@ -274,6 +247,15 @@ public sealed partial class GalleryViewModel : ObservableObject, IDisposable
         string timestamp = DateTimeOffset.UtcNow.ToString("o", System.Globalization.CultureInfo.InvariantCulture);
         string time = DateTime.Now.ToString("HH:mm:ss", System.Globalization.CultureInfo.InvariantCulture);
 
+        object contextValue = e.Payload switch
+        {
+            null => new Dictionary<string, JsonElement>(),
+            Dictionary<string, JsonElement> dict => dict,
+            IReadOnlyDictionary<string, object?> roDict => roDict,
+            _ when e.EventName == "valueChanged" => new Dictionary<string, object?> { ["value"] = e.Payload },
+            _ => e.Payload,
+        };
+
         // Build structured action log payload
         var actionMessage = new Dictionary<string, object?>
         {
@@ -281,8 +263,23 @@ public sealed partial class GalleryViewModel : ObservableObject, IDisposable
             ["surfaceId"] = e.SurfaceId,
             ["sourceComponentId"] = e.ComponentId,
             ["timestamp"] = timestamp,
-            ["context"] = e.Payload,
+            ["context"] = contextValue,
         };
+
+        if (e.UserMessage is not null)
+        {
+            actionMessage["userMessage"] = e.UserMessage;
+        }
+
+        Surface? surface = this._manager.GetSurface(e.SurfaceId) ?? this.ActiveSurface;
+        if (surface is { SendDataModel: true })
+        {
+            using JsonDocument dmDoc = JsonDocument.Parse(surface.DataModel.ToJson());
+            string dmKey = surface.ProtocolVersion == A2UiProtocol.Version10
+                ? "a2uiRendererDataModel"
+                : "a2uiClientDataModel";
+            actionMessage[dmKey] = dmDoc.RootElement.Clone();
+        }
 
         string entry;
         try
@@ -303,6 +300,7 @@ public sealed partial class GalleryViewModel : ObservableObject, IDisposable
     private void OnSurfaceCreated(object? sender, SurfaceCreatedEventArgs e)
     {
         this.ActiveSurface = e.Surface;
+        this.HasComponents = e.Surface.Components.Count > 0;
         this.UpdateDataModelJson(e.Surface);
     }
 
@@ -340,4 +338,14 @@ public sealed partial class GalleryViewModel : ObservableObject, IDisposable
         this._manager.ComponentsUpdated -= this.OnComponentsUpdated;
         this._manager.DataModelUpdated -= this.OnDataModelUpdated;
     }
+}
+
+internal static partial class GalleryViewModelLog
+{
+    [LoggerMessage(
+        EventId = 1,
+        Level = LogLevel.Error,
+        Message = "Unexpected exception processing message {Index}"
+    )]
+    public static partial void UnexpectedMessageProcessingError(ILogger logger, Exception ex, int index);
 }

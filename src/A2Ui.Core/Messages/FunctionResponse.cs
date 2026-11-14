@@ -15,6 +15,7 @@ public sealed record FunctionResponse
 
     /// <summary>Return value of the function, mutually exclusive with <see cref="Error"/>.</summary>
     [JsonPropertyName("value")]
+    [JsonConverter(typeof(NullableJsonElementConverter))]
     public JsonElement? Value { get; init; }
 
     /// <summary>Error object indicating failure of the function execution, mutually exclusive with <see cref="Value"/>.</summary>
@@ -49,6 +50,29 @@ public sealed record FunctionResponse
         if (violations.Count > 0)
         {
             throw new A2UiMessageValidationException(violations);
+        }
+    }
+}
+
+internal sealed class NullableJsonElementConverter : JsonConverter<JsonElement?>
+{
+    public override bool HandleNull => true;
+
+    public override JsonElement? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+    {
+        using var doc = JsonDocument.ParseValue(ref reader);
+        return doc.RootElement.Clone();
+    }
+
+    public override void Write(Utf8JsonWriter writer, JsonElement? value, JsonSerializerOptions options)
+    {
+        if (value.HasValue)
+        {
+            value.Value.WriteTo(writer);
+        }
+        else
+        {
+            writer.WriteNullValue();
         }
     }
 }

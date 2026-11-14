@@ -292,15 +292,18 @@ public sealed class CatalogRegistry(ILogger<CatalogRegistry>? logger = null)
     /// <summary>
     /// Builds the default catalog with all 18 Basic Catalog component types.
     /// </summary>
-    public static CatalogRegistry CreateDefault(ILoggerFactory? loggerFactory = null)
+    public static CatalogRegistry CreateDefault(
+        ILoggerFactory? loggerFactory = null,
+        A2UiAvaloniaOptions? options = null
+    )
     {
         return new CatalogRegistry(loggerFactory?.CreateLogger<CatalogRegistry>())
             // Display
             .Register(new TextCatalogEntry())
-            .Register(new ImageCatalogEntry(loggerFactory?.CreateLogger<ImageCatalogEntry>()))
+            .Register(new ImageCatalogEntry(loggerFactory?.CreateLogger<ImageCatalogEntry>(), options?.HttpClient, options))
             .Register(new IconCatalogEntry())
-            .Register(new VideoCatalogEntry())
-            .Register(new AudioPlayerCatalogEntry())
+            .Register(new VideoCatalogEntry(options))
+            .Register(new AudioPlayerCatalogEntry(options))
             .Register(new DividerCatalogEntry())
             // Layout
             .Register(new RowCatalogEntry())

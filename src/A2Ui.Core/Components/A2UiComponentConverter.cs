@@ -1,3 +1,4 @@
+using System.Collections.Frozen;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Blazejewicz.A2Ui.Core.Accessibility;
@@ -17,8 +18,15 @@ namespace Blazejewicz.A2Ui.Core.Components;
 /// Dispatches known Basic Catalog types and project extensions to their concrete types,
 /// and deserializes any other valid component type into <see cref="GenericComponent"/>.
 /// </summary>
-public sealed class A2UiComponentConverter : JsonConverter<A2UiComponent>
+/// <param name="fixedProtocolVersion">Optional fixed protocol version overriding options and ambient context.</param>
+public sealed class A2UiComponentConverter(string? fixedProtocolVersion) : JsonConverter<A2UiComponent>
 {
+    private readonly string? _fixedProtocolVersion = fixedProtocolVersion;
+
+    /// <summary>Initializes a new instance of the <see cref="A2UiComponentConverter"/> class.</summary>
+    public A2UiComponentConverter()
+        : this(null) { }
+
     /// <inheritdoc />
     public override A2UiComponent? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
     {
@@ -26,6 +34,11 @@ public sealed class A2UiComponentConverter : JsonConverter<A2UiComponent>
         {
             return null;
         }
+
+        using IDisposable? scope =
+            this._fixedProtocolVersion is not null && A2UiJsonUtilities.GetProtocolVersion(options) is null
+                ? DynamicValueConverter.EnterVersionScope(this._fixedProtocolVersion)
+                : null;
 
         using var doc = JsonDocument.ParseValue(ref reader);
         var root = doc.RootElement;
@@ -53,7 +66,8 @@ public sealed class A2UiComponentConverter : JsonConverter<A2UiComponent>
         }
 
         string id = idProp.GetString()!;
-        bool isV10 = DynamicValueConverter.CurrentProtocolVersion.Value == A2UiProtocol.Version10;
+        bool isV10 =
+            DynamicValueConverter.ResolveProtocolVersion(this._fixedProtocolVersion, options) == A2UiProtocol.Version10;
         if (isV10)
         {
             Uax31Validator.ValidateIdentifier(id, "Component ID");
@@ -120,7 +134,8 @@ public sealed class A2UiComponentConverter : JsonConverter<A2UiComponent>
             checks,
             text,
             label,
-            options
+            options,
+            isV10
         );
 
         var consumed = GetConsumedProperties(componentType);
@@ -175,7 +190,8 @@ public sealed class A2UiComponentConverter : JsonConverter<A2UiComponent>
         CheckRule[]? checks,
         DynamicValue? text,
         DynamicValue? label,
-        JsonSerializerOptions options
+        JsonSerializerOptions options,
+        bool isV10
     )
     {
         switch (componentType)
@@ -581,7 +597,6 @@ public sealed class A2UiComponentConverter : JsonConverter<A2UiComponent>
 
             default:
                 var properties = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
-                bool isV10 = DynamicValueConverter.CurrentProtocolVersion.Value == A2UiProtocol.Version10;
                 foreach (var prop in root.EnumerateObject())
                 {
                     if (isV10 && !s_commonProperties.Contains(prop.Name))
@@ -628,21 +643,23 @@ public sealed class A2UiComponentConverter : JsonConverter<A2UiComponent>
         }
     }
 
-    private static readonly HashSet<string> s_commonProperties = new(StringComparer.Ordinal)
-    {
-        "component",
-        "id",
-        "catalogId",
-        "weight",
-        "parent",
-        "child",
-        "children",
-        "accessibility",
-        "metadata",
-        "checks",
-        "text",
-        "label",
-    };
+    private static readonly FrozenSet<string> s_commonProperties = FrozenSet.ToFrozenSet(
+        [
+            "component",
+            "id",
+            "catalogId",
+            "weight",
+            "parent",
+            "child",
+            "children",
+            "accessibility",
+            "metadata",
+            "checks",
+            "text",
+            "label",
+        ],
+        StringComparer.Ordinal
+    );
 
     private static HashSet<string> GetConsumedProperties(string componentType)
     {
@@ -742,6 +759,11 @@ public sealed class A2UiComponentConverter : JsonConverter<A2UiComponent>
     /// <inheritdoc />
     public override void Write(Utf8JsonWriter writer, A2UiComponent value, JsonSerializerOptions options)
     {
+        using IDisposable? scope =
+            this._fixedProtocolVersion is not null && A2UiJsonUtilities.GetProtocolVersion(options) is null
+                ? DynamicValueConverter.EnterVersionScope(this._fixedProtocolVersion)
+                : null;
+
         writer.WriteStartObject();
         writer.WriteString("component", value.Component);
         writer.WriteString("id", value.Id);

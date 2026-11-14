@@ -1,3 +1,4 @@
+using System.Collections.Frozen;
 using System.Text.RegularExpressions;
 using Blazejewicz.A2Ui.Core.Messages;
 
@@ -12,7 +13,7 @@ public static partial class Uax31Validator
     // UAX 31 identifier pattern:
     // Start: Letter, Letter Number, or underscore
     // Continue: Letter, Letter Number, Non-spacing mark, Spacing combining mark, Decimal digit, Connector punctuation, or underscore
-    [GeneratedRegex(@"^[\p{L}\p{Nl}_][\p{L}\p{Nl}\p{Mn}\p{Mc}\p{Nd}\p{Pc}_]*$", RegexOptions.Compiled)]
+    [GeneratedRegex(@"^[\p{L}\p{Nl}_][\p{L}\p{Nl}\p{Mn}\p{Mc}\p{Nd}\p{Pc}_]*$")]
     private static partial Regex IdentifierRegex();
 
     /// <summary>Returns true if the string matches the UAX 31 identifier pattern.</summary>
@@ -59,12 +60,14 @@ public static partial class Uax31Validator
         }
     }
 
-    private static readonly HashSet<string> s_officialExtensions = new(StringComparer.Ordinal)
-    {
-        "a2ui_telemetry",
-        "a2ui_experimental",
-        "a2ui_theme",
-    };
+    private static readonly FrozenSet<string> s_officialExtensions = FrozenSet.ToFrozenSet(
+        [
+            "a2ui_telemetry",
+            "a2ui_experimental",
+            "a2ui_theme",
+        ],
+        StringComparer.Ordinal
+    );
 
     /// <summary>
     /// Validates a metadata extension key.

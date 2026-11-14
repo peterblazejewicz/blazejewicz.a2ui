@@ -6,6 +6,7 @@ using A2A.V0_3;
 using Blazejewicz.A2Ui.Avalonia.Shell.Models;
 using Blazejewicz.A2Ui.Core;
 using Blazejewicz.A2Ui.Core.Messages;
+using Blazejewicz.A2Ui.Core.Surfaces;
 using Microsoft.Extensions.Logging;
 
 namespace Blazejewicz.A2Ui.Avalonia.Shell.Services;
@@ -13,7 +14,12 @@ namespace Blazejewicz.A2Ui.Avalonia.Shell.Services;
 /// <summary>
 /// A2A HTTP client that communicates with an agent supporting A2UI.
 /// </summary>
-public sealed class A2AAgentClient(HttpClient http, AgentConfig config, ILogger<A2AAgentClient> logger) : IA2AClient
+public sealed class A2AAgentClient(
+    HttpClient http,
+    AgentConfig config,
+    ILogger<A2AAgentClient> logger,
+    SurfaceManager? surfaceManager = null
+) : IA2AClient
 {
     /// <summary>A2A extension negotiation header name. Used by DI at client registration time.</summary>
     internal const string A2UiExtensionHeader = "X-A2A-Extensions";
@@ -29,9 +35,43 @@ public sealed class A2AAgentClient(HttpClient http, AgentConfig config, ILogger<
         AllowOutOfOrderMetadataProperties = true,
     };
 
+    private static readonly JsonElement s_v10Capabilities = JsonDocument
+        .Parse(
+            """
+            {
+              "1.0": {
+                "supportedCatalogIds": [
+                  "https://a2ui.org/catalogs/basic/v1/catalog.json",
+                  "https://a2ui.org/specification/v1_0/catalogs/basic/catalog.json"
+                ]
+              }
+            }
+            """
+        )
+        .RootElement.Clone();
+
+    private static readonly JsonElement s_v09Capabilities = JsonDocument
+        .Parse(
+            """
+            {
+              "v0.9": {
+                "supportedCatalogIds": [
+                  "https://a2ui.org/specification/v0_9/standard_catalog.json",
+                  "https://a2ui.org/specification/v0_9/basic_catalog.json"
+                ]
+              }
+            }
+            """
+        )
+        .RootElement.Clone();
+
     private readonly HttpClient _http = http;
     private readonly AgentConfig _config = config;
     private readonly ILogger<A2AAgentClient> _logger = logger;
+    private readonly SurfaceManager? _surfaceManager = surfaceManager;
+
+    /// <summary>Gets the active A2A conversation context identifier persisted across turns.</summary>
+    public string? ContextId { get; private set; }
 
     public async Task<string> GetAgentNameAsync(CancellationToken ct = default)
     {
@@ -77,7 +117,7 @@ public sealed class A2AAgentClient(HttpClient http, AgentConfig config, ILogger<
 
         JsonElement data = JsonSerializer.SerializeToElement(userAction, s_camelCase);
         Dictionary<string, JsonElement> dataDict =
-            JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(data.GetRawText(), s_camelCase) ?? [];
+            JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(data, s_camelCase) ?? [];
 
         List<Part> parts =
         [
@@ -101,7 +141,7 @@ public sealed class A2AAgentClient(HttpClient http, AgentConfig config, ILogger<
 
         JsonElement data = JsonSerializer.SerializeToElement(userAction, s_camelCase);
         Dictionary<string, JsonElement> dataDict =
-            JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(data.GetRawText(), s_camelCase) ?? [];
+            JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(data, s_camelCase) ?? [];
 
         List<Part> parts =
         [
@@ -140,7 +180,9 @@ public sealed class A2AAgentClient(HttpClient http, AgentConfig config, ILogger<
             {
                 Role = MessageRole.User,
                 MessageId = messageId,
+                ContextId = this.ContextId,
                 Parts = parts,
+                Metadata = this.BuildMessageMetadata(),
             },
         };
 
@@ -189,6 +231,11 @@ public sealed class A2AAgentClient(HttpClient http, AgentConfig config, ILogger<
             AgentTask? task = rpcResponse?.Result is { } resultNode
                 ? resultNode.Deserialize<AgentTask>(A2AJsonUtilities.DefaultOptions)
                 : null;
+
+            if (!string.IsNullOrEmpty(task?.ContextId))
+            {
+                this.ContextId = task.ContextId;
+            }
 
             stopwatch.Stop();
 
@@ -288,12 +335,61 @@ public sealed class A2AAgentClient(HttpClient http, AgentConfig config, ILogger<
                 continue;
             }
 
-            JsonElement dataElement = JsonSerializer.SerializeToElement(dataDict, A2AJsonUtilities.DefaultOptions);
-            messages.Add(dataElement.GetRawText());
+            messages.Add(JsonSerializer.Serialize(dataDict, A2AJsonUtilities.DefaultOptions));
         }
 
         A2AAgentClientLog.ExtractedMessages(this._logger, messages.Count, correlationId);
         return messages;
+    }
+
+    private Dictionary<string, JsonElement> BuildMessageMetadata()
+    {
+        var metadata = new Dictionary<string, JsonElement>(StringComparer.Ordinal)
+        {
+            ["a2uiRendererCapabilities"] = s_v10Capabilities,
+            ["a2uiClientCapabilities"] = s_v09Capabilities,
+        };
+
+        if (this._surfaceManager is not null)
+        {
+            var v10Surfaces = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
+            var v09Surfaces = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
+            foreach (Surface surface in this._surfaceManager.GetSurfaces())
+            {
+                if (!surface.SendDataModel)
+                {
+                    continue;
+                }
+
+                using var doc = JsonDocument.Parse(surface.DataModel.ToJson());
+                if (surface.ProtocolVersion == A2UiProtocol.Version10)
+                {
+                    v10Surfaces[surface.SurfaceId] = doc.RootElement.Clone();
+                }
+                else
+                {
+                    v09Surfaces[surface.SurfaceId] = doc.RootElement.Clone();
+                }
+            }
+
+            if (v10Surfaces.Count > 0)
+            {
+                metadata["a2uiRendererDataModel"] = JsonSerializer.SerializeToElement(
+                    new { version = A2UiProtocol.Version10, surfaces = v10Surfaces },
+                    s_camelCase
+                );
+            }
+
+            if (v09Surfaces.Count > 0)
+            {
+                metadata["a2uiClientDataModel"] = JsonSerializer.SerializeToElement(
+                    new { version = A2UiProtocol.Version091, surfaces = v09Surfaces },
+                    s_camelCase
+                );
+            }
+        }
+
+        return metadata;
     }
 
     private static string? GetMimeFromMetadata(Dictionary<string, JsonElement>? metadata)
@@ -360,20 +456,6 @@ internal static partial class A2AAgentClientLog
         string httpUrl,
         int requestBytes,
         string messageId,
-        string correlationId
-    );
-
-    [LoggerMessage(
-        EventId = 8,
-        Level = LogLevel.Information,
-        Message = "SendMessage completed: httpStatus={HttpStatus}, responseBytes={ResponseBytes}, messageCount={MessageCount}, durationMs={DurationMs}, correlationId={CorrelationId}"
-    )]
-    public static partial void SendMessageCompleted(
-        ILogger logger,
-        int httpStatus,
-        long responseBytes,
-        int messageCount,
-        long durationMs,
         string correlationId
     );
 

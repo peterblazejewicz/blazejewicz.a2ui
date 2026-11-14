@@ -7,6 +7,7 @@ using Blazejewicz.A2Ui.Avalonia.Catalog.Entries;
 using Blazejewicz.A2Ui.Core.Accessibility;
 using Blazejewicz.A2Ui.Core.Actions;
 using Blazejewicz.A2Ui.Core.Bindings;
+using Blazejewicz.A2Ui.Core.Children;
 using Blazejewicz.A2Ui.Core.Components;
 using Blazejewicz.A2Ui.Core.Surfaces;
 using Blazejewicz.A2Ui.Core.Validation;
@@ -233,8 +234,92 @@ public sealed class V10ComponentUpdatesTests
         // t2 in StackPanel when multiple roots
         var panel = Assert.IsType<StackPanel>(hiddenControl);
         var t2Control = panel.Children[1];
-        Assert.False(t2Control.IsVisible);
+        Assert.True(t2Control.IsVisible);
         Assert.Equal(AccessibilityView.Raw, AutomationProperties.GetAccessibilityView(t2Control));
+    }
+
+    [AvaloniaFact]
+    public void Accessibility_HiddenSubtreeAndVersionScoping_ConformsToSpec()
+    {
+        var catalog = CatalogRegistry.CreateDefault();
+        var renderer = new A2UiRenderer(catalog);
+        var surface = new Surface("a11y-v10", "https://a2ui.org/specification/v1_0/catalogs/basic/catalog.json")
+        {
+            ProtocolVersion = "1.0",
+        };
+        surface.DataModel.Apply("/parentHidden", System.Text.Json.JsonDocument.Parse("true").RootElement);
+
+        surface.UpdateComponents([
+            new ColumnComponent
+            {
+                Id = "root",
+                Children = ChildList.FromIds("visible_text", "explicitly_hidden_child"),
+                Accessibility = new AccessibilityAttributes
+                {
+                    Live = "POLITE", // Invalid uppercase must be ignored per spec
+                    Hidden = DynamicValue.FromPath("/parentHidden"),
+                },
+            },
+            new TextComponent
+            {
+                Id = "visible_text",
+                Text = DynamicValue.FromString("Visible Content"),
+            },
+            new TextComponent
+            {
+                Id = "explicitly_hidden_child",
+                Text = DynamicValue.FromString("Child With Own Hidden"),
+                Accessibility = new AccessibilityAttributes
+                {
+                    Hidden = DynamicValue.FromBool(true),
+                },
+            },
+        ]);
+
+        var rootControl = Assert.IsType<StackPanel>(renderer.Render(surface));
+        var child1 = rootControl.Children[0];
+        var child2 = rootControl.Children[1];
+
+        // 1. Visual visibility is unaffected; subtree is hidden from assistive tech; invalid live "POLITE" is Off
+        Assert.True(rootControl.IsVisible);
+        Assert.True(child1.IsVisible);
+        Assert.True(child2.IsVisible);
+        Assert.Equal(AutomationLiveSetting.Off, AutomationProperties.GetLiveSetting(rootControl));
+        Assert.Equal(AccessibilityView.Raw, AutomationProperties.GetAccessibilityView(rootControl));
+        Assert.Equal(AccessibilityView.Raw, AutomationProperties.GetAccessibilityView(child1));
+        Assert.Equal(AccessibilityView.Raw, AutomationProperties.GetAccessibilityView(child2));
+
+        // 2. Toggle parent hidden -> false: child1 restores Content while child2 stays Raw
+        surface.DataModel.Apply("/parentHidden", System.Text.Json.JsonDocument.Parse("false").RootElement);
+        renderer.Render(surface);
+
+        Assert.Equal(AccessibilityView.Content, AutomationProperties.GetAccessibilityView(rootControl));
+        Assert.Equal(AccessibilityView.Content, AutomationProperties.GetAccessibilityView(child1));
+        Assert.Equal(AccessibilityView.Raw, AutomationProperties.GetAccessibilityView(child2));
+
+        // 3. On v0.9/v0.9.1 surface, live and hidden are ignored
+        var v09Surface = new Surface("a11y-v09")
+        {
+            ProtocolVersion = "v0.9.1",
+        };
+        v09Surface.UpdateComponents([
+            new TextComponent
+            {
+                Id = "root",
+                Text = DynamicValue.FromString("v0.9 text"),
+                Accessibility = new AccessibilityAttributes
+                {
+                    Label = DynamicValue.FromString("v0.9 label"),
+                    Live = "polite",
+                    Hidden = DynamicValue.FromBool(true),
+                },
+            },
+        ]);
+
+        var v09Control = renderer.Render(v09Surface)!;
+        Assert.Equal("v0.9 label", AutomationProperties.GetName(v09Control));
+        Assert.Equal(AutomationLiveSetting.Off, AutomationProperties.GetLiveSetting(v09Control));
+        Assert.Equal(AccessibilityView.Content, AutomationProperties.GetAccessibilityView(v09Control));
     }
 
     [AvaloniaFact]

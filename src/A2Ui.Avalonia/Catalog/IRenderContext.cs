@@ -1,5 +1,8 @@
+using System.Text.Json;
 using Avalonia.Controls;
 using Blazejewicz.A2Ui.Core.Bindings;
+using Blazejewicz.A2Ui.Core.Functions;
+using Blazejewicz.A2Ui.Core.Messages;
 using Blazejewicz.A2Ui.Core.Rpc;
 using Microsoft.Extensions.Logging;
 
@@ -25,10 +28,78 @@ public interface IRenderContext
     string? Resolve(DynamicValue? value);
 
     /// <summary>
-    /// Write a value back to the data model at the given JSON Pointer path.
+    /// Resolve a <see cref="DynamicValue"/> to its native <see cref="JsonElement"/> representation
+    /// (preserving strings, numbers, booleans, arrays, and objects).
+    /// </summary>
+    JsonElement? ResolveJsonElement(DynamicValue? value)
+    {
+        if (value is null)
+        {
+            return null;
+        }
+
+        return value.Match<JsonElement?>(
+            onString: s => JsonSerializer.SerializeToElement(s.Value, Core.A2UiJsonSerializerContext.Default.String),
+            onNumber: n => Core.Surfaces.DataModel.SerializeNumberToElement(n.Value),
+            onBool: b => JsonSerializer.SerializeToElement(b.Value, Core.A2UiJsonSerializerContext.Default.Boolean),
+            onArray: a => a.Value.Clone(),
+            onPath: _ =>
+            {
+                string? resolved = this.Resolve(value);
+                return resolved is not null
+                    ? JsonSerializer.SerializeToElement(resolved, Core.A2UiJsonSerializerContext.Default.String)
+                    : Core.Surfaces.DataModel.NullElement;
+            },
+            onFunction: _ =>
+            {
+                string? resolved = this.Resolve(value);
+                return resolved is not null
+                    ? JsonSerializer.SerializeToElement(resolved, Core.A2UiJsonSerializerContext.Default.String)
+                    : Core.Surfaces.DataModel.NullElement;
+            },
+            onObject: o =>
+            {
+                string? resolved = this.Resolve(o);
+                if (resolved is not null)
+                {
+                    using var doc = JsonDocument.Parse(resolved);
+                    return doc.RootElement.Clone();
+                }
+
+                return Core.Surfaces.DataModel.NullElement;
+            }
+        );
+    }
+
+    /// <summary>
+    /// Resolve a <see cref="DynamicValue"/> to its native <see cref="JsonElement"/> representation
+    /// under the specified <paramref name="callerRole"/>.
+    /// </summary>
+    JsonElement? ResolveJsonElement(DynamicValue? value, FunctionCallerRole callerRole) =>
+        this.ResolveJsonElement(value);
+
+    /// <summary>
+    /// Invoke a catalog function from an active user gesture (e.g. a Button click action).
+    /// Passes <see cref="FunctionCallerRole.RendererAction"/> so functions requiring
+    /// user activation (such as <c>openUrl</c>) are permitted to execute.
+    /// </summary>
+    void InvokeActionFunction(FunctionCallValue functionCall) =>
+        this.Resolve(DynamicValue.FromFunctionCall(functionCall));
+
+    /// <summary>
+    /// Write a string value back to the data model at the given JSON Pointer path.
     /// Used for two-way binding (e.g. TextField with value: {"path": "/username"}).
     /// </summary>
     void UpdateDataModel(string path, string? value);
+
+    /// <summary>
+    /// Write a typed JSON value (array, boolean, number, or string) back to the data model at the given JSON Pointer path.
+    /// </summary>
+    void UpdateDataModel(string path, JsonElement? value) =>
+        this.UpdateDataModel(
+            path,
+            value is { ValueKind: JsonValueKind.String } s ? s.GetString() : value?.GetRawText()
+        );
 
     /// <summary>
     /// Return the weight of a component by ID, or null if unknown / no weight set.
@@ -56,6 +127,13 @@ public interface IRenderContext
     /// Optional RPC handler for dispatching remote agent functions.
     /// </summary>
     RpcHandler? RpcHandler => null;
+
+    /// <summary>
+    /// Report a renderer error (e.g. invalid action, action execution failure, or expression evaluation error)
+    /// to be emitted to the agent.
+    /// </summary>
+    /// <param name="error">The structured error payload to report.</param>
+    void ReportRendererError(RendererError error) { }
 
     /// <summary>
     /// Cancellation token tied to the surface/render lifetime.

@@ -1,3 +1,4 @@
+using Blazejewicz.A2Ui.Core.Functions;
 using Blazejewicz.A2Ui.Core.Surfaces;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
@@ -12,15 +13,14 @@ namespace Microsoft.Extensions.DependencyInjection;
 public static class A2UiCoreServiceCollectionExtensions
 {
     /// <summary>
-    /// Register <see cref="SurfaceManager"/> (singleton) and bind
-    /// <see cref="SurfaceManagerOptions"/> so consumers can inject either
-    /// directly.
+    /// Register <see cref="SurfaceManager"/> (singleton), <see cref="IFunctionRegistry"/> (singleton),
+    /// and bind <see cref="SurfaceManagerOptions"/> so consumers can inject either directly.
     /// </summary>
     /// <param name="services">The DI service collection to register into.</param>
     /// <param name="configure">
     /// Optional policy configurator. Typical use:
     /// <c>services.AddA2UiCore(opts => opts.StrictMode = true)</c>.
-    /// When <see langword="null"/>, default (lenient) options are used.
+    /// When <see langword="null"/>, default options are used.
     /// </param>
     /// <returns>The same <paramref name="services"/> for chaining.</returns>
     public static IServiceCollection AddA2UiCore(
@@ -43,6 +43,9 @@ public static class A2UiCoreServiceCollectionExtensions
             sp.GetService<ILoggerFactory>(),
             sp.GetRequiredService<IOptions<SurfaceManagerOptions>>().Value
         ));
+        services.TryAddSingleton<IFunctionRegistry>(sp =>
+            FunctionRegistry.CreateDefault(sp.GetService<ILoggerFactory>())
+        );
 
         return services;
     }

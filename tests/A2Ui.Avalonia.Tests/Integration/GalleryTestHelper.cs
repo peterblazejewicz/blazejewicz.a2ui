@@ -3,7 +3,7 @@ using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
 using Avalonia.Interactivity;
 using Blazejewicz.A2Ui.Avalonia.Catalog;
-using Blazejewicz.A2Ui.Avalonia.Functions;
+using Blazejewicz.A2Ui.Core.Functions;
 using Blazejewicz.A2Ui.Core.Messages;
 using Blazejewicz.A2Ui.Core.Surfaces;
 using Microsoft.Extensions.Logging;

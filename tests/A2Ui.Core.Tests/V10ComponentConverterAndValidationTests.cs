@@ -5,7 +5,7 @@ using Blazejewicz.A2Ui.Core.Components;
 using Blazejewicz.A2Ui.Core.Messages;
 using Blazejewicz.A2Ui.Core.Validation;
 
-namespace Blazejewicz.A2Ui.Core.Tests.A2Ui;
+namespace Blazejewicz.A2Ui.Core.Tests;
 
 public sealed class V10ComponentConverterAndValidationTests
 {

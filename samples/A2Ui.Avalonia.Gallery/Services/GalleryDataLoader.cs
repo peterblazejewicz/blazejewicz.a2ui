@@ -66,7 +66,7 @@ public sealed class GalleryDataLoader(ILogger<GalleryDataLoader> logger)
     {
         if (!Directory.Exists(directory))
         {
-            this._logger.LogWarning("Specs directory not found: {Directory}", directory);
+            GalleryDataLoaderLog.SpecsDirectoryNotFound(this._logger, directory);
             return;
         }
 
@@ -86,11 +86,11 @@ public sealed class GalleryDataLoader(ILogger<GalleryDataLoader> logger)
             }
             catch (JsonException ex)
             {
-                this._logger.LogWarning(ex, "Skipping malformed JSON: {FilePath}", filePath);
+                GalleryDataLoaderLog.MalformedJsonSkipped(this._logger, ex, filePath);
             }
             catch (IOException ex)
             {
-                this._logger.LogWarning(ex, "Cannot read file: {FilePath}", filePath);
+                GalleryDataLoaderLog.FileReadFailed(this._logger, ex, filePath);
             }
         }
     }
@@ -223,7 +223,7 @@ public sealed class GalleryDataLoader(ILogger<GalleryDataLoader> logger)
 
         if (protocolVersion is not ("v1.0" or A2UiProtocol.Version10))
         {
-            messages = JsonSerializer.Deserialize<A2UiMessage[]>(arrayEl.GetRawText(), s_jsonOptions) ?? [];
+            messages = JsonSerializer.Deserialize<A2UiMessage[]>(arrayEl, s_jsonOptions) ?? [];
         }
     }
 
@@ -244,4 +244,16 @@ public sealed class GalleryDataLoader(ILogger<GalleryDataLoader> logger)
             words.Select(w => string.IsNullOrEmpty(w) ? w : char.ToUpper(w[0], CultureInfo.InvariantCulture) + w[1..])
         );
     }
+}
+
+internal static partial class GalleryDataLoaderLog
+{
+    [LoggerMessage(EventId = 1, Level = LogLevel.Warning, Message = "Specs directory not found: {Directory}")]
+    public static partial void SpecsDirectoryNotFound(ILogger logger, string directory);
+
+    [LoggerMessage(EventId = 2, Level = LogLevel.Warning, Message = "Skipping malformed JSON: {FilePath}")]
+    public static partial void MalformedJsonSkipped(ILogger logger, Exception ex, string filePath);
+
+    [LoggerMessage(EventId = 3, Level = LogLevel.Warning, Message = "Cannot read file: {FilePath}")]
+    public static partial void FileReadFailed(ILogger logger, Exception ex, string filePath);
 }

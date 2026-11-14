@@ -1,4 +1,4 @@
-using Blazejewicz.A2Ui.Avalonia.Functions;
+using Blazejewicz.A2Ui.Core.Functions;
 using Xunit;
 
 namespace Blazejewicz.A2Ui.Avalonia.Tests.Functions;
@@ -62,10 +62,8 @@ public sealed class ExpressionParserTests
     public void Parse_EscapedInterpolation_EmitsLiteralDollarBrace()
     {
         IReadOnlyList<ExpressionToken> result = this._parser.Parse("escaped \\${foo}");
-        Assert.Equal(3, result.Count);
-        Assert.Equal(new LiteralToken("escaped "), result[0]);
-        Assert.Equal(new LiteralToken("${"), result[1]);
-        Assert.Equal(new LiteralToken("foo}"), result[2]);
+        Assert.Single(result);
+        Assert.Equal(new LiteralToken("escaped ${foo}"), result[0]);
     }
 
     // ── Parse: function calls ────────────────────────────────────────
@@ -117,7 +115,7 @@ public sealed class ExpressionParserTests
     [Fact]
     public void Parse_MaxDepthExceeded_ThrowsA2UiExpressionException()
     {
-        Action act = () => this._parser.Parse("depth", 11);
+        Action act = () => this._parser.Parse("depth", 101);
         var ex = Assert.Throws<A2UiExpressionException>(act);
         Assert.Contains("Max recursion depth", ex.Message);
     }
@@ -213,11 +211,8 @@ public sealed class ExpressionParserTests
     [Fact]
     public void Parse_EmptyString_ReturnsLiteralOrEmpty()
     {
-        // Parse("") has no "${" so it returns [LiteralToken("")] via the early-return path.
-        // The empty-literal filter runs only inside the while-loop branch, not on this path.
         IReadOnlyList<ExpressionToken> result = this._parser.Parse("");
-        Assert.Single(result);
-        Assert.Equal(new LiteralToken(""), result[0]);
+        Assert.Empty(result);
     }
 
     // ── Parse: unterminated string literal ───────────────────────────

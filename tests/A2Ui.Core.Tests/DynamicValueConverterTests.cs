@@ -1,7 +1,7 @@
 using System.Text.Json;
 using Blazejewicz.A2Ui.Core.Bindings;
 
-namespace Blazejewicz.A2Ui.Core.Tests.A2Ui;
+namespace Blazejewicz.A2Ui.Core.Tests;
 
 public sealed class DynamicValueConverterTests
 {
@@ -181,7 +181,8 @@ public sealed class DynamicValueConverterTests
             onBool: _ => "bool",
             onArray: _ => "arr",
             onPath: _ => "path",
-            onFunction: _ => "fn"
+            onFunction: _ => "fn",
+            onObject: _ => "obj"
         );
         Assert.Equal("str:hello", result);
     }

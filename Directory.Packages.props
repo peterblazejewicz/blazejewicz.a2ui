@@ -12,6 +12,7 @@
   </ItemGroup>
   <ItemGroup Label="Avalonia">
     <PackageVersion Include="Avalonia" Version="12.1.5" />
+    <!-- Avalonia.Controls.DataGrid is published from a separate repository; 12.1.2 is the latest 12.1.x release compatible with Avalonia 12.1.5. -->
     <PackageVersion Include="Avalonia.Controls.DataGrid" Version="12.1.2" />
     <PackageVersion Include="Avalonia.Desktop" Version="12.1.5" />
     <PackageVersion Include="AvaloniaUI.DiagnosticsSupport" Version="2.2.3" />
@@ -36,12 +37,12 @@
   </ItemGroup>
   <ItemGroup Label="Test packages — xUnit v3 + MTP">
     <PackageVersion Include="xunit.v3" Version="3.2.2" />
-    <PackageVersion Include="xunit.v3.extensibility.core" Version="3.2.2" />
     <PackageVersion Include="Avalonia.Headless.XUnit" Version="12.1.5" />
   </ItemGroup>
   <ItemGroup Label="Test packages — shared">
     <PackageVersion Include="xunit.runner.visualstudio" Version="3.1.5" />
     <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="18.0.0" />
     <PackageVersion Include="coverlet.collector" Version="6.0.2" />
+    <PackageVersion Include="YamlDotNet" Version="16.3.0" />
   </ItemGroup>
 </Project>

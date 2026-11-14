@@ -3,7 +3,7 @@ using Blazejewicz.A2Ui.Core.Surfaces;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 
-namespace Blazejewicz.A2Ui.Core.Tests.A2Ui;
+namespace Blazejewicz.A2Ui.Core.Tests;
 
 public sealed class ServiceCollectionExtensionsTests
 {
@@ -18,30 +18,27 @@ public sealed class ServiceCollectionExtensionsTests
         var opts = sp.GetRequiredService<IOptions<SurfaceManagerOptions>>();
 
         Assert.NotNull(sm);
-        Assert.False(opts.Value.StrictMode);
+        Assert.True(opts.Value.StrictMode);
     }
 
     [Fact]
     public void AddA2UiCore_WithConfigure_PropagatesStrictModeIntoSurfaceManager()
     {
         var services = new ServiceCollection();
-        services.AddA2UiCore(opts => opts.StrictMode = true);
+        services.AddA2UiCore(opts => opts.StrictMode = false);
 
         using var sp = services.BuildServiceProvider();
         var sm = sp.GetRequiredService<SurfaceManager>();
         var opts = sp.GetRequiredService<IOptions<SurfaceManagerOptions>>();
 
-        Assert.True(opts.Value.StrictMode);
-        // StrictMode is internal policy; surface its effect via a strict-mode throw.
-        // Duplicate delete of an unknown surface throws in strict mode.
-        Assert.Throws<Messages.A2UiMessageValidationException>(() =>
-            sm.Process(
-                new Messages.A2UiMessage
-                {
-                    Version = "v0.9",
-                    DeleteSurface = new Messages.DeleteSurface { SurfaceId = "ghost" },
-                }
-            )
+        Assert.False(opts.Value.StrictMode);
+        // Lenient mode ignores deleteSurface on an unknown surface without throwing.
+        sm.Process(
+            new Messages.A2UiMessage
+            {
+                Version = "v0.9",
+                DeleteSurface = new Messages.DeleteSurface { SurfaceId = "ghost" },
+            }
         );
     }
 

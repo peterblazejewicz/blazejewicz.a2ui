@@ -1,6 +1,6 @@
 using System.Diagnostics;
 using System.Text.Json;
-using Blazejewicz.A2Ui.Core.Bindings;
+using Blazejewicz.A2Ui.Core.Components;
 using Blazejewicz.A2Ui.Core.Messages;
 using Blazejewicz.A2Ui.Core.Validation;
 using Blazejewicz.A2Ui.Core.Versioning;
@@ -11,18 +11,25 @@ namespace Blazejewicz.A2Ui.Core.Surfaces;
 
 /// <summary>
 /// Manages the lifecycle of A2UI surfaces and their component trees.
-/// Thread-safe via locking. Events are fired outside the lock to prevent
-/// deadlocks if subscribers call back into GetSurface or Process.
 /// </summary>
 /// <remarks>
-/// Initializes a new instance of the <see cref="SurfaceManager"/> class.
+/// <para>
+/// <see cref="ParseAndAdapt(string)"/>, <see cref="ParseAndAdapt(JsonElement)"/>, and
+/// <see cref="ParseAndAdapt(ReadOnlySpan{byte})"/> are stateless and thread-safe for concurrent execution on
+/// background or worker threads.
+/// </para>
+/// <para>
+/// Although <see cref="SurfaceManager"/> synchronizes its internal surface registry and fires lifecycle events
+/// outside the lock, <see cref="Surface"/> and <see cref="DataModel"/> instances are not thread-safe. In UI hosts,
+/// <see cref="Process(InternalOperation)"/> (and its convenience overloads) as well as all <see cref="Surface"/>
+/// and <see cref="DataModel"/> mutations and reads must be serialized onto the owning host/UI thread
+/// (for example, Avalonia <c>Dispatcher.UIThread</c> or Blazor <c>InvokeAsync</c>).
+/// </para>
 /// </remarks>
 /// <param name="loggerFactory">Optional logger factory for structured logging.</param>
 /// <param name="options">
-/// Optional policy controlling how spec-MUST violations are handled. Pass
-/// <c>new SurfaceManagerOptions { StrictMode = true }</c> to have the manager throw
-/// <see cref="A2UiMessageValidationException"/> at each leniency site instead of
-/// logging and continuing. Defaults to the lenient policy.
+/// Optional policy controlling how spec-MUST violations are handled. Defaults to
+/// strict upstream validation (<see cref="SurfaceManagerOptions.StrictMode"/> = <see langword="true"/>).
 /// </param>
 public sealed class SurfaceManager(ILoggerFactory? loggerFactory = null, SurfaceManagerOptions? options = null)
 {
@@ -55,46 +62,78 @@ public sealed class SurfaceManager(ILoggerFactory? loggerFactory = null, Surface
     /// <summary>Raised when an inbound agentFunctionResponse message is received.</summary>
     public event EventHandler<AgentFunctionResponseOp>? AgentFunctionResponseReceived;
 
+    /// <summary>Raised when a protocol or operational error occurs during message processing.</summary>
+    public event EventHandler<RendererToAgentMessage>? ErrorReported;
+
+    /// <summary>
+    /// Statelessly parses, validates, and adapts a raw JSON envelope string into a version-neutral
+    /// <see cref="InternalOperation"/>. Safe to call concurrently from background worker threads.
+    /// </summary>
+    /// <param name="json">The raw JSON envelope string.</param>
+    /// <returns>The validated, version-neutral <see cref="InternalOperation"/>.</returns>
+    public static InternalOperation ParseAndAdapt(string json)
+    {
+        ArgumentNullException.ThrowIfNull(json);
+        using var doc = JsonDocument.Parse(json);
+        return ParseAndAdapt(doc.RootElement);
+    }
+
+    /// <summary>
+    /// Statelessly validates and adapts a JSON element envelope into a version-neutral
+    /// <see cref="InternalOperation"/>. Safe to call concurrently from background worker threads.
+    /// </summary>
+    /// <param name="element">The root JSON element of the envelope.</param>
+    /// <returns>The validated, version-neutral <see cref="InternalOperation"/>.</returns>
+    public static InternalOperation ParseAndAdapt(JsonElement element)
+    {
+        IVersionAdapter adapter = VersionAdapterFactory.GetAdapter(element);
+        return adapter.AdaptAgentToRenderer(element);
+    }
+
+    /// <summary>
+    /// Statelessly parses, validates, and adapts a UTF-8 JSON envelope span into a version-neutral
+    /// <see cref="InternalOperation"/>. Safe to call concurrently from background worker threads.
+    /// </summary>
+    /// <param name="utf8Json">The UTF-8 encoded JSON envelope bytes.</param>
+    /// <returns>The validated, version-neutral <see cref="InternalOperation"/>.</returns>
+    public static InternalOperation ParseAndAdapt(ReadOnlySpan<byte> utf8Json)
+    {
+        var reader = new Utf8JsonReader(utf8Json);
+        using var doc = JsonDocument.ParseValue(ref reader);
+        if (reader.Read())
+        {
+            throw new JsonException("Expected end of JSON after single A2UI envelope.");
+        }
+
+        return ParseAndAdapt(doc.RootElement);
+    }
+
     /// <summary>
     /// Processes a v1.0 agent-to-renderer message.
     /// </summary>
     public void Process(AgentToRendererMessage message)
     {
-        using var scope = DynamicValueConverter.EnterVersionScope(A2UiProtocol.Version10);
         var adapter = (V10VersionAdapter)VersionAdapterFactory.GetAdapter(A2UiProtocol.Version10);
-        using var doc = JsonDocument.Parse(
-            JsonSerializer.Serialize(message, A2UiJsonSerializerContext.Default.AgentToRendererMessage)
-        );
-        var op = adapter.AdaptAgentToRenderer(doc.RootElement);
+        var op = adapter.AdaptAgentToRenderer(message);
         this.Process(op);
     }
 
     /// <summary>
     /// Processes a raw JSON envelope string, automatically adapting between protocol versions.
     /// </summary>
-    public void Process(string json)
-    {
-        var adapter = VersionAdapterFactory.GetAdapterFromJson(json);
-        var op = adapter.AdaptAgentToRenderer(json);
-        this.Process(op);
-    }
+    public void Process(string json) => this.Process(ParseAndAdapt(json));
 
     /// <summary>
     /// Processes a raw JSON element envelope, automatically adapting between protocol versions.
     /// </summary>
-    public void Process(JsonElement element)
-    {
-        var adapter = VersionAdapterFactory.GetAdapter(element);
-        var op = adapter.AdaptAgentToRenderer(element);
-        this.Process(op);
-    }
+    public void Process(JsonElement element) => this.Process(ParseAndAdapt(element));
 
     /// <summary>
     /// Processes an internal operation, updating internal state and raising events.
     /// </summary>
     public void Process(InternalOperation operation)
     {
-        string messageType = operation.OperationType;
+        string messageType = GetSpanOperationName(operation);
         string surfaceId = operation.TargetSurfaceId ?? "(surface-independent)";
         SurfaceManagerLog.MessageDispatched(this._logger, messageType, surfaceId);
 
@@ -109,12 +148,26 @@ public sealed class SurfaceManager(ILoggerFactory? loggerFactory = null, Surface
         this.ExecuteOperationCore(operation);
     }
 
+    private static string GetSpanOperationName(InternalOperation operation) =>
+        operation switch
+        {
+            CreateSurfaceOp => "CreateSurface",
+            UpdateComponentsOp => "UpdateComponents",
+            UpdateDataModelOp => "UpdateDataModel",
+            DeleteSurfaceOp => "DeleteSurface",
+            CallRendererFunctionOp => "CallRendererFunction",
+            AgentFunctionResponseOp => "AgentFunctionResponse",
+            _ => operation.OperationType,
+        };
+
     private void ExecuteOperationCore(InternalOperation operation)
     {
         SurfaceCreatedEventArgs? createdArgs = null;
         SurfaceDeletedEventArgs? deletedArgs = null;
         ComponentsUpdatedEventArgs? componentsArgs = null;
         DataModelUpdatedEventArgs? dataModelArgs = null;
+        RendererToAgentMessage? reportedError = null;
+        A2UiMessageValidationException? pendingException = null;
         string createdPrimaryColor = "(default)";
         string createdAgentDisplayName = "(default)";
         string componentsRootId = "(none)";
@@ -127,17 +180,43 @@ public sealed class SurfaceManager(ILoggerFactory? loggerFactory = null, Surface
             switch (operation)
             {
                 case CreateSurfaceOp cs:
-                    if (this._surfaces.ContainsKey(cs.SurfaceId))
+                    if (this._surfaces.TryGetValue(cs.SurfaceId, out var existingSurface))
                     {
                         SurfaceManagerLog.DuplicateCreate(this._logger, cs.SurfaceId);
-                        if (this._options.StrictMode || cs.EnforceUniqueness)
+                        string msg = $"Duplicate createSurface for surface '{cs.SurfaceId}' — surface already exists.";
+                        reportedError = BuildRendererError(
+                            "INTEGRITY_ERROR",
+                            cs.SurfaceId,
+                            msg,
+                            version: existingSurface.ProtocolVersion ?? cs.ProtocolVersion
+                        );
+                        if (!this._options.ReportErrorsOnly && (this._options.StrictMode || cs.EnforceUniqueness))
                         {
-                            throw new A2UiMessageValidationException(
-                                $"Duplicate createSurface for surface '{cs.SurfaceId}' — spec requires each createSurface to target a new surface."
-                            );
+                            pendingException = new A2UiMessageValidationException(msg);
                         }
                         break;
                     }
+
+                    if (
+                        this._options.RegisteredCatalogIds is { } regCats
+                        && !string.IsNullOrEmpty(cs.CatalogId)
+                        && !regCats.Contains(cs.CatalogId)
+                    )
+                    {
+                        string msg = $"Catalog not found: '{cs.CatalogId}' for surface '{cs.SurfaceId}'.";
+                        reportedError = BuildRendererError(
+                            "CATALOG_NOT_FOUND",
+                            cs.SurfaceId,
+                            msg,
+                            version: cs.ProtocolVersion
+                        );
+                        if (!this._options.ReportErrorsOnly)
+                        {
+                            pendingException = new A2UiMessageValidationException(msg);
+                        }
+                        break;
+                    }
+
                     var surface = new Surface(cs.SurfaceId, cs.CatalogId)
                     {
                         Theme = cs.Theme,
@@ -154,30 +233,44 @@ public sealed class SurfaceManager(ILoggerFactory? loggerFactory = null, Surface
                     {
                         if (surface.ComponentConstraints?.Count > 0)
                         {
-                            var errors = CompositionValidator.Validate(cs.SurfaceId, comps, surface.ComponentConstraints);
+                            var errors = CompositionValidator.Validate(
+                                cs.SurfaceId,
+                                comps,
+                                surface.ComponentConstraints
+                            );
                             if (errors.Count > 0)
                             {
-                                throw new A2UiMessageValidationException(
-                                    $"Composition validation failed for surface '{cs.SurfaceId}': {errors[0].Message}"
+                                string msg =
+                                    $"Composition validation failed for surface '{cs.SurfaceId}': {errors[0].Message}";
+                                reportedError = BuildRendererError(
+                                    errors[0].Code,
+                                    cs.SurfaceId,
+                                    msg,
+                                    errors[0].Path,
+                                    version: cs.ProtocolVersion
                                 );
+                                if (!this._options.ReportErrorsOnly)
+                                {
+                                    pendingException = new A2UiMessageValidationException(msg);
+                                }
+                                break;
                             }
                         }
 
                         surface.UpdateComponents([.. comps]);
                     }
                     this._surfaces[cs.SurfaceId] = surface;
+                    Diagnostics.ActiveSurfaces.Add(1);
                     createdArgs = new(surface);
                     (createdPrimaryColor, createdAgentDisplayName) = ExtractThemeFields(surface.Theme);
                     break;
 
                 case DeleteSurfaceOp ds:
-                    deletedArgs = this.HandleDelete(new DeleteSurface { SurfaceId = ds.SurfaceId });
+                    deletedArgs = this.HandleDelete(ds, out reportedError, out pendingException);
                     break;
 
                 case UpdateComponentsOp uc:
-                    componentsArgs = this.HandleUpdateComponents(
-                        new UpdateComponents { SurfaceId = uc.SurfaceId, Components = [.. uc.Components] }
-                    );
+                    componentsArgs = this.HandleUpdateComponents(uc, out reportedError, out pendingException);
                     if (
                         componentsArgs is not null
                         && componentsArgs.Surface.Components.TryGetValue("root", out var root)
@@ -194,11 +287,16 @@ public sealed class SurfaceManager(ILoggerFactory? loggerFactory = null, Surface
                     if (!this._surfaces.TryGetValue(ud.SurfaceId, out var s))
                     {
                         SurfaceManagerLog.UnknownSurfaceOp(this._logger, "updateDataModel", ud.SurfaceId);
-                        if (this._options.StrictMode)
+                        string msg = $"updateDataModel references unknown surface '{ud.SurfaceId}'.";
+                        reportedError = BuildRendererError(
+                            "INTEGRITY_ERROR",
+                            ud.SurfaceId,
+                            msg,
+                            version: ud.ProtocolVersion
+                        );
+                        if (!this._options.ReportErrorsOnly && this._options.StrictMode)
                         {
-                            throw new A2UiMessageValidationException(
-                                $"updateDataModel references unknown surface '{ud.SurfaceId}'."
-                            );
+                            pendingException = new A2UiMessageValidationException(msg);
                         }
                         break;
                     }
@@ -206,15 +304,21 @@ public sealed class SurfaceManager(ILoggerFactory? loggerFactory = null, Surface
                     {
                         s.DataModel.Apply(ud.Path, ud.Value, deleteOnNull: ud.DeleteOnNull);
                     }
-                    catch (JsonException ex)
+                    catch (Exception ex) when (ex is JsonException or FormatException)
                     {
                         SurfaceManagerLog.DataModelApplyFailed(this._logger, ud.SurfaceId, ud.Path ?? "/", ex.Message);
-                        if (this._options.StrictMode)
+                        string msg =
+                            $"updateDataModel for surface '{ud.SurfaceId}' failed at path '{ud.Path ?? "/"}': {ex.Message}";
+                        reportedError = BuildRendererError(
+                            "DATA_ERROR",
+                            ud.SurfaceId,
+                            msg,
+                            ud.Path,
+                            version: s.ProtocolVersion ?? ud.ProtocolVersion
+                        );
+                        if (!this._options.ReportErrorsOnly && this._options.StrictMode)
                         {
-                            throw new A2UiMessageValidationException(
-                                $"updateDataModel for surface '{ud.SurfaceId}' failed at path '{ud.Path ?? "/"}': {ex.Message}",
-                                ex
-                            );
+                            pendingException = new A2UiMessageValidationException(msg, ex);
                         }
                         break;
                     }
@@ -228,6 +332,30 @@ public sealed class SurfaceManager(ILoggerFactory? loggerFactory = null, Surface
                 case AgentFunctionResponseOp:
                     break;
             }
+        }
+
+        Diagnostics.SurfaceOperations.Add(
+            1,
+            new KeyValuePair<string, object?>("a2ui.operation.type", operation.OperationType),
+            new KeyValuePair<string, object?>("a2ui.status", reportedError is null ? "ok" : "error")
+        );
+
+        if (reportedError?.Error is { } rendererError)
+        {
+            Diagnostics.Errors.Add(
+                1,
+                new KeyValuePair<string, object?>("a2ui.error.code", rendererError.Code)
+            );
+        }
+
+        if (reportedError is not null)
+        {
+            this.ErrorReported?.Invoke(this, reportedError);
+        }
+
+        if (pendingException is not null)
+        {
+            throw pendingException;
         }
 
         if (createdArgs is not null)
@@ -276,6 +404,25 @@ public sealed class SurfaceManager(ILoggerFactory? loggerFactory = null, Surface
             this.AgentFunctionResponseReceived?.Invoke(this, afrOp);
         }
     }
+
+    private static RendererToAgentMessage BuildRendererError(
+        string code,
+        string surfaceId,
+        string message,
+        string? path = null,
+        string? version = null
+    ) =>
+        new()
+        {
+            Version = version ?? A2UiProtocol.Version10,
+            Error = new RendererError
+            {
+                Code = code,
+                SurfaceId = surfaceId,
+                Path = path,
+                Message = message,
+            },
+        };
 
     /// <summary>
     /// Processes a single A2UI message, updating internal state and raising events.
@@ -363,6 +510,7 @@ public sealed class SurfaceManager(ILoggerFactory? loggerFactory = null, Surface
 
         if (cleared.Count > 0)
         {
+            Diagnostics.ActiveSurfaces.Add(-cleared.Count);
             SurfaceManagerLog.SurfacesCleared(this._logger, cleared.Count);
         }
     }
@@ -378,60 +526,116 @@ public sealed class SurfaceManager(ILoggerFactory? loggerFactory = null, Surface
         }
     }
 
-    private SurfaceDeletedEventArgs? HandleDelete(DeleteSurface ds)
+    /// <summary>Gets a snapshot of all currently active surfaces.</summary>
+    /// <returns>A read-only list of active surfaces.</returns>
+    public IReadOnlyList<Surface> GetSurfaces()
     {
+        lock (this._lock)
+        {
+            return [.. this._surfaces.Values];
+        }
+    }
+
+    private SurfaceDeletedEventArgs? HandleDelete(
+        DeleteSurfaceOp ds,
+        out RendererToAgentMessage? reportedError,
+        out A2UiMessageValidationException? pendingException
+    )
+    {
+        reportedError = null;
+        pendingException = null;
+
         if (this._surfaces.Remove(ds.SurfaceId, out var surface))
         {
+            Diagnostics.ActiveSurfaces.Add(-1);
             return new(surface);
         }
 
         SurfaceManagerLog.UnknownSurfaceOp(this._logger, "deleteSurface", ds.SurfaceId);
-        if (this._options.StrictMode)
+        if (!this._options.ReportErrorsOnly && this._options.StrictMode)
         {
-            throw new A2UiMessageValidationException($"deleteSurface references unknown surface '{ds.SurfaceId}'.");
+            string msg = $"deleteSurface references unknown surface '{ds.SurfaceId}'.";
+            reportedError = BuildRendererError("INTEGRITY_ERROR", ds.SurfaceId, msg, version: ds.ProtocolVersion);
+            pendingException = new A2UiMessageValidationException(msg);
         }
         return null;
     }
 
-    private ComponentsUpdatedEventArgs? HandleUpdateComponents(UpdateComponents uc)
+    private ComponentsUpdatedEventArgs? HandleUpdateComponents(
+        UpdateComponentsOp uc,
+        out RendererToAgentMessage? reportedError,
+        out A2UiMessageValidationException? pendingException
+    )
     {
+        reportedError = null;
+        pendingException = null;
+
         if (!this._surfaces.TryGetValue(uc.SurfaceId, out var surface))
         {
             SurfaceManagerLog.UnknownSurfaceOp(this._logger, "updateComponents", uc.SurfaceId);
-            if (this._options.StrictMode)
+            string msg = $"updateComponents references unknown surface '{uc.SurfaceId}'.";
+            reportedError = BuildRendererError("INTEGRITY_ERROR", uc.SurfaceId, msg, version: uc.ProtocolVersion);
+            if (!this._options.ReportErrorsOnly && this._options.StrictMode)
             {
-                throw new A2UiMessageValidationException(
-                    $"updateComponents references unknown surface '{uc.SurfaceId}'."
-                );
+                pendingException = new A2UiMessageValidationException(msg);
             }
             return null;
         }
+
         if (surface.ComponentConstraints?.Count > 0)
         {
-            var errors = CompositionValidator.Validate(uc.SurfaceId, uc.Components, surface.ComponentConstraints);
+            // Merge existing surface components with incoming batch so cross-batch composition constraints are validated.
+            var mergedById = new Dictionary<string, A2UiComponent>(surface.Components, StringComparer.Ordinal);
+            foreach (var c in uc.Components)
+            {
+                mergedById[c.Id] = c;
+            }
+
+            var errors = CompositionValidator.Validate(
+                uc.SurfaceId,
+                [.. mergedById.Values],
+                surface.ComponentConstraints
+            );
             if (errors.Count > 0)
             {
-                throw new A2UiMessageValidationException(
-                    $"Composition validation failed for surface '{uc.SurfaceId}': {errors[0].Message}"
+                string msg = $"Composition validation failed for surface '{uc.SurfaceId}': {errors[0].Message}";
+                reportedError = BuildRendererError(
+                    errors[0].Code,
+                    uc.SurfaceId,
+                    msg,
+                    errors[0].Path,
+                    version: surface.ProtocolVersion ?? uc.ProtocolVersion
                 );
+                if (!this._options.ReportErrorsOnly)
+                {
+                    pendingException = new A2UiMessageValidationException(msg);
+                }
+                return null;
             }
         }
 
-        surface.UpdateComponents(uc.Components);
+        A2UiComponent[] updated = uc.Components as A2UiComponent[] ?? [.. uc.Components];
+        surface.UpdateComponents(updated);
 
         // Warn if the surface still has no "root" component after this update.
         // Spec requires exactly one component with id "root".
         if (!surface.Components.ContainsKey("root"))
         {
             SurfaceManagerLog.RootComponentMissing(this._logger, uc.SurfaceId);
-            if (this._options.StrictMode)
+            string msg =
+                $"Surface '{uc.SurfaceId}' has no 'root' component after updateComponents — spec requires exactly one.";
+            reportedError = BuildRendererError(
+                "INTEGRITY_ERROR",
+                uc.SurfaceId,
+                msg,
+                version: surface.ProtocolVersion ?? uc.ProtocolVersion
+            );
+            if (!this._options.ReportErrorsOnly && this._options.StrictMode)
             {
-                throw new A2UiMessageValidationException(
-                    $"Surface '{uc.SurfaceId}' has no 'root' component after updateComponents — spec requires exactly one."
-                );
+                pendingException = new A2UiMessageValidationException(msg);
             }
         }
 
-        return new(surface, uc.Components);
+        return new(surface, updated);
     }
 }

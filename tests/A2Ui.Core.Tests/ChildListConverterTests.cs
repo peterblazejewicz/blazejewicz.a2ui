@@ -3,7 +3,7 @@ using Blazejewicz.A2Ui.Core.Bindings;
 using Blazejewicz.A2Ui.Core.Children;
 using Blazejewicz.A2Ui.Core.Components;
 
-namespace Blazejewicz.A2Ui.Core.Tests.A2Ui;
+namespace Blazejewicz.A2Ui.Core.Tests;
 
 public sealed class ChildListConverterTests
 {

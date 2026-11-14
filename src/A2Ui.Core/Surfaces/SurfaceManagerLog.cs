@@ -43,14 +43,14 @@ internal static partial class SurfaceManagerLog
     [LoggerMessage(
         EventId = 5,
         Level = LogLevel.Warning,
-        Message = "Ignoring duplicate createSurface for '{SurfaceId}'"
+        Message = "Duplicate createSurface for '{SurfaceId}'"
     )]
     public static partial void DuplicateCreate(ILogger logger, string surfaceId);
 
     [LoggerMessage(
         EventId = 6,
         Level = LogLevel.Warning,
-        Message = "Ignoring {Operation} for unknown surface '{SurfaceId}'"
+        Message = "Operation {Operation} targets unknown surface '{SurfaceId}'"
     )]
     public static partial void UnknownSurfaceOp(ILogger logger, string operation, string surfaceId);
 

@@ -97,7 +97,13 @@ public sealed class CardCatalogEntry : ICatalogEntry
         // Card uses single child property
         if (component.Child is not null)
         {
-            border.Child = context.RenderChild(component.Child);
+            Control? child = context.RenderChild(component.Child);
+            if (child is not null)
+            {
+                RenderContext.DetachFromParent(child);
+            }
+
+            border.Child = child;
         }
         else
         {
@@ -105,6 +111,7 @@ public sealed class CardCatalogEntry : ICatalogEntry
             var panel = new StackPanel { Spacing = 8 };
             foreach (var child in context.RenderChildren(component.Id))
             {
+                RenderContext.DetachFromParent(child);
                 panel.Children.Add(child);
             }
 
@@ -124,24 +131,40 @@ public sealed class CardCatalogEntry : ICatalogEntry
 
         if (component.Child is not null)
         {
-            border.Child = context.RenderChild(component.Child);
+            Control? child = context.RenderChild(component.Child);
+            if (!ReferenceEquals(border.Child, child))
+            {
+                if (child is not null)
+                {
+                    RenderContext.DetachFromParent(child);
+                }
+
+                border.Child = child;
+            }
+
             return true;
         }
 
+        var children = context.RenderChildren(component.Id).ToList();
         if (border.Child is StackPanel panel)
         {
-            panel.Children.Clear();
-            foreach (var child in context.RenderChildren(component.Id))
+            if (!LayoutHelper.SequenceReferenceEqual(panel.Children, children))
             {
-                panel.Children.Add(child);
+                panel.Children.Clear();
+                foreach (var child in children)
+                {
+                    RenderContext.DetachFromParent(child);
+                    panel.Children.Add(child);
+                }
             }
 
             return true;
         }
 
         var newPanel = new StackPanel { Spacing = 8 };
-        foreach (var child in context.RenderChildren(component.Id))
+        foreach (var child in children)
         {
+            RenderContext.DetachFromParent(child);
             newPanel.Children.Add(child);
         }
 
@@ -179,6 +202,7 @@ internal static class LayoutHelper
         var panel = new StackPanel { Orientation = orientation, Spacing = 8 };
         foreach (var child in children)
         {
+            RenderContext.DetachFromParent(child);
             panel.Children.Add(child);
         }
 
@@ -221,6 +245,12 @@ internal static class LayoutHelper
                 return false;
             }
 
+            if (WeightedGridMatches(grid, orientation, children, weights!))
+            {
+                ApplyCrossAxisAlignment(children, orientation, align);
+                return true;
+            }
+
             grid.Children.Clear();
             grid.ColumnDefinitions.Clear();
             grid.RowDefinitions.Clear();
@@ -235,6 +265,12 @@ internal static class LayoutHelper
                 return false;
             }
 
+            if (SpaceBetweenGridMatches(grid, orientation, children))
+            {
+                ApplyCrossAxisAlignment(children, orientation, align);
+                return true;
+            }
+
             grid.Children.Clear();
             grid.ColumnDefinitions.Clear();
             grid.RowDefinitions.Clear();
@@ -247,11 +283,7 @@ internal static class LayoutHelper
             return false;
         }
 
-        panel.Children.Clear();
-        foreach (var child in children)
-        {
-            panel.Children.Add(child);
-        }
+        UpdatePanelChildren(panel, children);
 
         if (orientation == Orientation.Vertical)
         {
@@ -265,6 +297,168 @@ internal static class LayoutHelper
         }
 
         ApplyCrossAxisAlignment(children, orientation, align);
+        return true;
+    }
+
+    internal static void UpdatePanelChildren(Panel panel, IReadOnlyList<Control> desired)
+    {
+        if (SequenceReferenceEqual(panel.Children, desired))
+        {
+            return;
+        }
+
+        if (panel.Children.Count == desired.Count && CanReplaceSlotsInPlace(panel, desired))
+        {
+            for (int i = 0; i < desired.Count; i++)
+            {
+                if (!ReferenceEquals(panel.Children[i], desired[i]))
+                {
+                    RenderContext.DetachFromParent(desired[i]);
+                    panel.Children[i] = desired[i];
+                }
+            }
+
+            return;
+        }
+
+        panel.Children.Clear();
+        foreach (var child in desired)
+        {
+            RenderContext.DetachFromParent(child);
+            panel.Children.Add(child);
+        }
+    }
+
+    private static bool CanReplaceSlotsInPlace(Panel panel, IReadOnlyList<Control> desired)
+    {
+        for (int i = 0; i < desired.Count; i++)
+        {
+            if (!ReferenceEquals(panel.Children[i], desired[i]) && ReferenceEquals(desired[i].Parent, panel))
+            {
+                return false;
+            }
+
+            for (int j = i + 1; j < desired.Count; j++)
+            {
+                if (ReferenceEquals(desired[i], desired[j]))
+                {
+                    return false;
+                }
+            }
+        }
+
+        return true;
+    }
+
+    internal static bool SequenceReferenceEqual(global::Avalonia.Controls.Controls existing, IReadOnlyList<Control> desired)
+    {
+        if (existing.Count != desired.Count)
+        {
+            return false;
+        }
+
+        for (int i = 0; i < desired.Count; i++)
+        {
+            if (!ReferenceEquals(existing[i], desired[i]))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool WeightedGridMatches(
+        Grid grid,
+        Orientation orientation,
+        List<Control> children,
+        double[] weights
+    )
+    {
+        if (!SequenceReferenceEqual(grid.Children, children))
+        {
+            return false;
+        }
+
+        bool isHorizontal = orientation == Orientation.Horizontal;
+        if (isHorizontal)
+        {
+            if (grid.RowDefinitions.Count != 0 || grid.ColumnDefinitions.Count != children.Count)
+            {
+                return false;
+            }
+
+            for (int i = 0; i < children.Count; i++)
+            {
+                double weight = i < weights.Length ? weights[i] : 0;
+                GridLength expected = weight > 0 ? new GridLength(weight, GridUnitType.Star) : GridLength.Auto;
+                if (grid.ColumnDefinitions[i].Width != expected || Grid.GetColumn(children[i]) != i)
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        if (grid.ColumnDefinitions.Count != 0 || grid.RowDefinitions.Count != children.Count)
+        {
+            return false;
+        }
+
+        for (int i = 0; i < children.Count; i++)
+        {
+            double weight = i < weights.Length ? weights[i] : 0;
+            GridLength expected = weight > 0 ? new GridLength(weight, GridUnitType.Star) : GridLength.Auto;
+            if (grid.RowDefinitions[i].Height != expected || Grid.GetRow(children[i]) != i)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool SpaceBetweenGridMatches(Grid grid, Orientation orientation, List<Control> children)
+    {
+        if (!SequenceReferenceEqual(grid.Children, children))
+        {
+            return false;
+        }
+
+        int expectedDefs = children.Count == 0 ? 0 : (children.Count * 2) - 1;
+        bool isHorizontal = orientation == Orientation.Horizontal;
+        if (isHorizontal)
+        {
+            if (grid.RowDefinitions.Count != 0 || grid.ColumnDefinitions.Count != expectedDefs)
+            {
+                return false;
+            }
+
+            for (int i = 0; i < children.Count; i++)
+            {
+                if (Grid.GetColumn(children[i]) != i * 2)
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        if (grid.ColumnDefinitions.Count != 0 || grid.RowDefinitions.Count != expectedDefs)
+        {
+            return false;
+        }
+
+        for (int i = 0; i < children.Count; i++)
+        {
+            if (Grid.GetRow(children[i]) != i * 2)
+            {
+                return false;
+            }
+        }
+
         return true;
     }
 
@@ -319,6 +513,7 @@ internal static class LayoutHelper
                 Grid.SetRow(child, i);
             }
 
+            RenderContext.DetachFromParent(child);
             grid.Children.Add(child);
         }
 
@@ -362,6 +557,7 @@ internal static class LayoutHelper
                 Grid.SetRow(child, i * 2);
             }
 
+            RenderContext.DetachFromParent(child);
             grid.Children.Add(child);
 
             if (i < children.Count - 1)

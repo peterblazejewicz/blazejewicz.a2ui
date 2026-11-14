@@ -1,5 +1,4 @@
 using System.Text.Json;
-using Blazejewicz.A2Ui.Core.Bindings;
 using Blazejewicz.A2Ui.Core.Messages;
 
 namespace Blazejewicz.A2Ui.Core.Versioning;
@@ -22,9 +21,8 @@ public sealed class V09VersionAdapter : IVersionAdapter
     /// <inheritdoc />
     public InternalOperation AdaptAgentToRenderer(JsonElement root)
     {
-        using var scope = DynamicValueConverter.EnterVersionScope(A2UiProtocol.Version091);
         var message =
-            JsonSerializer.Deserialize(root.GetRawText(), A2UiJsonSerializerContext.Default.A2UiMessage)
+            JsonSerializer.Deserialize(root, A2UiJsonUtilities.V09Context.A2UiMessage)
             ?? throw new A2UiMessageValidationException("Failed to deserialize A2UiMessage from JSON.");
 
         return this.AdaptAgentToRenderer(message);
@@ -37,8 +35,9 @@ public sealed class V09VersionAdapter : IVersionAdapter
     /// <returns>The adapted internal operation.</returns>
     public InternalOperation AdaptAgentToRenderer(A2UiMessage message)
     {
-        using var scope = DynamicValueConverter.EnterVersionScope(A2UiProtocol.Version091);
         message.Validate();
+        string version =
+            message.Version == A2UiProtocol.Version09 ? A2UiProtocol.Version09 : A2UiProtocol.Version091;
 
         if (message.CreateSurface is { } cs)
         {
@@ -57,18 +56,23 @@ public sealed class V09VersionAdapter : IVersionAdapter
                 DataModel = cs.DataModel?.Clone(),
                 Metadata = cs.Metadata,
                 EnforceUniqueness = false,
-                ProtocolVersion = cs.Theme is not null ? A2UiProtocol.Version09 : A2UiProtocol.Version091,
+                ProtocolVersion = version,
             };
         }
 
         if (message.DeleteSurface is { } ds)
         {
-            return new DeleteSurfaceOp { SurfaceId = ds.SurfaceId };
+            return new DeleteSurfaceOp { SurfaceId = ds.SurfaceId, ProtocolVersion = version };
         }
 
         if (message.UpdateComponents is { } uc)
         {
-            return new UpdateComponentsOp { SurfaceId = uc.SurfaceId, Components = uc.Components };
+            return new UpdateComponentsOp
+            {
+                SurfaceId = uc.SurfaceId,
+                Components = uc.Components,
+                ProtocolVersion = version,
+            };
         }
 
         if (message.UpdateDataModel is { } ud)
@@ -79,6 +83,7 @@ public sealed class V09VersionAdapter : IVersionAdapter
                 Path = ud.Path,
                 Value = ud.Value?.Clone(),
                 DeleteOnNull = false,
+                ProtocolVersion = version,
             };
         }
 

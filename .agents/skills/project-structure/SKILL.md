@@ -19,9 +19,9 @@ A2UI/                               <- repo root
 +-- .agents/skills/                  <- project-scoped agent skills
 |
 +-- src/                             <- Library projects
-|   +-- A2Ui.Core/                   <- A2UI messages, validation, SurfaceManager, DataModel
+|   +-- A2Ui.Core/                   <- A2UI messages, validation, SurfaceManager, DataModel, FunctionRegistry (26 functions), RpcHandler
 |   +-- AgUi.Protocol/               <- AG-UI event types, SSE parser, tool-call accumulator
-|   +-- A2Ui.Avalonia/               <- Catalog registry (18 entries), function registry, bridge
+|   +-- A2Ui.Avalonia/               <- Catalog registry (18 entries), renderer (Controls/A2UiSurface.cs), event bridge
 |
 +-- tests/                           <- Test projects and shared test utilities
 |   +-- A2Ui.Core.Tests/             <- Core unit + telemetry tests
@@ -45,7 +45,7 @@ A2UI/                               <- repo root
 
 | Folder | Contents |
 |--------|----------|
-| `src/` | Library source projects (`A2Ui.Core`, `AgUi.Protocol`, `A2Ui.Avalonia`) |
+| `src/` | Library source projects (`A2Ui.Core` -> `Blazejewicz.A2Ui.Core`, `AgUi.Protocol` -> `Blazejewicz.A2Ui.AgUi.Protocol`, `A2Ui.Avalonia` -> `Blazejewicz.A2Ui.Avalonia`) |
 | `tests/` | Unit/headless test projects (`A2Ui.Core.Tests`, `AgUi.Protocol.Tests`, `A2Ui.Avalonia.Tests`) and `A2Ui.TestHelpers` |
 | `samples/` | Sample Avalonia desktop applications (`A2Ui.Avalonia.Gallery`, `A2Ui.Avalonia.Shell`) |
 | `specification/` | Authoritative protocol specs, JSON schemas, catalog examples (`v0_9`, `v0_9_1`, `v1_0`) |

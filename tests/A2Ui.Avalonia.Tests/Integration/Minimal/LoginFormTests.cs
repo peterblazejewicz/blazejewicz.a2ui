@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Avalonia.Controls;
 using Avalonia.Headless.XUnit;
 using Xunit;
@@ -102,8 +103,8 @@ public sealed class LoginFormTests
         GalleryTestHelper.ClickButton(button);
 
         UserActionEventArgs loginAction = result.ActionLog.Single(a => a.EventName == "login_submitted");
-        var payload = Assert.IsType<Dictionary<string, string?>>(loginAction.Payload);
-        Assert.Equal("alice", payload["user"]);
-        Assert.Equal("secret123", payload["pass"]);
+        var payload = Assert.IsType<Dictionary<string, JsonElement>>(loginAction.Payload);
+        Assert.Equal("alice", payload["user"].GetString());
+        Assert.Equal("secret123", payload["pass"].GetString());
     }
 }

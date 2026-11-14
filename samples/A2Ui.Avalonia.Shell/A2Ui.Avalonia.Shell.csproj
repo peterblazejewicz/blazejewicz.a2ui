@@ -6,6 +6,7 @@
     <AssemblyName>A2Ui.Avalonia.Shell</AssemblyName>
     <RootNamespace>Blazejewicz.A2Ui.Avalonia.Shell</RootNamespace>
     <UseAvalonia>true</UseAvalonia>
+    <IsPackable>false</IsPackable>
     <NoWarn>$(NoWarn);CS1591</NoWarn>
   </PropertyGroup>
 

@@ -202,8 +202,10 @@ public sealed class DividerCatalogEntry : ICatalogEntry
 }
 
 /// <summary>A2UI "Video" → placeholder (Avalonia has no native video control).</summary>
-public sealed class VideoCatalogEntry : ICatalogEntry
+public sealed class VideoCatalogEntry(A2UiAvaloniaOptions? options = null) : ICatalogEntry
 {
+    private readonly A2UiAvaloniaOptions? _options = options;
+
     /// <inheritdoc />
     public string ComponentType => "Video";
 
@@ -211,9 +213,10 @@ public sealed class VideoCatalogEntry : ICatalogEntry
     public Control Create(A2UiComponent component, DataModel dataModel, IRenderContext context)
     {
         var typed = (VideoComponent)component;
-        string urlText = MediaSecurityHelper.FormatSafeUrl(context.Resolve(typed.Url));
+        var schemes = this._options?.AllowedMediaSchemes;
+        string urlText = MediaSecurityHelper.FormatSafeUrl(context.Resolve(typed.Url), schemes);
         string? poster = context.Resolve(typed.PosterUrl);
-        string? posterText = poster is not null ? MediaSecurityHelper.FormatSafeUrl(poster) : null;
+        string? posterText = poster is not null ? MediaSecurityHelper.FormatSafeUrl(poster, schemes) : null;
         string text = posterText is not null ? $"[Video: {urlText}, Poster: {posterText}]" : $"[Video: {urlText}]";
         return new TextBlock { Text = text, Classes = { "Caption" } };
     }
@@ -227,17 +230,20 @@ public sealed class VideoCatalogEntry : ICatalogEntry
             return false;
         }
 
-        string urlText = MediaSecurityHelper.FormatSafeUrl(context.Resolve(typed.Url));
+        var schemes = this._options?.AllowedMediaSchemes;
+        string urlText = MediaSecurityHelper.FormatSafeUrl(context.Resolve(typed.Url), schemes);
         string? poster = context.Resolve(typed.PosterUrl);
-        string? posterText = poster is not null ? MediaSecurityHelper.FormatSafeUrl(poster) : null;
+        string? posterText = poster is not null ? MediaSecurityHelper.FormatSafeUrl(poster, schemes) : null;
         tb.Text = posterText is not null ? $"[Video: {urlText}, Poster: {posterText}]" : $"[Video: {urlText}]";
         return true;
     }
 }
 
 /// <summary>A2UI "AudioPlayer" → placeholder (Avalonia has no native audio control).</summary>
-public sealed class AudioPlayerCatalogEntry : ICatalogEntry
+public sealed class AudioPlayerCatalogEntry(A2UiAvaloniaOptions? options = null) : ICatalogEntry
 {
+    private readonly A2UiAvaloniaOptions? _options = options;
+
     /// <inheritdoc />
     public string ComponentType => "AudioPlayer";
 
@@ -245,7 +251,7 @@ public sealed class AudioPlayerCatalogEntry : ICatalogEntry
     public Control Create(A2UiComponent component, DataModel dataModel, IRenderContext context)
     {
         var typed = (AudioPlayerComponent)component;
-        string urlText = MediaSecurityHelper.FormatSafeUrl(context.Resolve(typed.Url));
+        string urlText = MediaSecurityHelper.FormatSafeUrl(context.Resolve(typed.Url), this._options?.AllowedMediaSchemes);
         return new TextBlock { Text = $"[AudioPlayer: {urlText}]", Classes = { "Caption" } };
     }
 
@@ -258,7 +264,7 @@ public sealed class AudioPlayerCatalogEntry : ICatalogEntry
             return false;
         }
 
-        string urlText = MediaSecurityHelper.FormatSafeUrl(context.Resolve(typed.Url));
+        string urlText = MediaSecurityHelper.FormatSafeUrl(context.Resolve(typed.Url), this._options?.AllowedMediaSchemes);
         tb.Text = $"[AudioPlayer: {urlText}]";
         return true;
     }

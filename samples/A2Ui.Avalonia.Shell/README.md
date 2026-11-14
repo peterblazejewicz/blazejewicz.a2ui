@@ -11,9 +11,9 @@ It provides an interactive conversational UI capable of rendering streaming surf
   ```http
   X-A2A-Extensions: https://a2ui.org/a2a-extension/a2ui/v1.0, https://a2ui.org/a2a-extension/a2ui/v0.9.1, https://a2ui.org/a2a-extension/a2ui/v0.9
   ```
-* **Outbound action serialization:** User interactions from rendered controls are serialized via `UserActionSerializer`. For `v1.0` surfaces, it emits typed `RendererToAgentMessage` envelopes; for `v0.9` / `v0.9.1` surfaces (such as the reference Python `restaurant_finder` agent), it emits the `userAction` envelope with top-level `name`, `surfaceId`, `sourceComponentId`, `timestamp`, and `context`.
-* **Surface lifecycle:** `SurfaceManager.Clear()` is invoked before each user query and action dispatch so prior surface controls are cleanly replaced.
-* **Observability:** Structured `[LoggerMessage]` logging (`A2AAgentClientLog`, `RequestSummaryLogger`, `SurfaceManagerLog`), Serilog `BeginScope` request correlation (`CorrelationId`, `MessageId`), and `ActivitySource` distributed tracing (`A2A.SendMessage`).
+* **Outbound action serialization:** User interactions from rendered controls are serialized via `UserActionSerializer`. For `v1.0` surfaces, it emits typed `RendererToAgentMessage` envelopes; for `v0.9` / `v0.9.1` surfaces, it emits typed `ClientToServerMessage` envelopes (`{ "version": "v0.9.1", "action": { "name", "surfaceId", "sourceComponentId", "timestamp", "context" } }`).
+* **Surface lifecycle & capabilities:** Outbound `AgentMessage.Metadata` includes `a2uiRendererCapabilities` (`"1.0"`), `a2uiClientCapabilities` (`"v0.9"`), and active `sendDataModel` surface states (`a2uiRendererDataModel` / `a2uiClientDataModel`), while persisting `ContextId` across conversation turns.
+* **Observability:** Structured `[LoggerMessage]` logging (`A2AAgentClientLog`, `LoggingHttpMessageHandlerLog`, `RequestSummaryLoggerLog`, `ShellViewModelLog`, `ShellWindowLog`, `SurfaceManagerLog`), Serilog `BeginScope` request correlation (`CorrelationId`, `MessageId`), and `ActivitySource` distributed tracing (`A2A.SendMessage`).
 
 ## 2. Prerequisites and agent setup
 
@@ -65,5 +65,5 @@ dotnet run --project samples/A2Ui.Avalonia.Shell/A2Ui.Avalonia.Shell.csproj --co
 | 4. Booking form | Click `"Book Now"` on a restaurant card | Booking form surface renders with party size input, `CalendarDatePicker`, and `TimePicker`. |
 | 5. Two-way data binding | Enter party size, select date and time | Input controls write back into the surface `DataModel` via `InputHelper`. |
 | 6. Action submission | Click `"Submit Booking"` | Outbound action dispatches with bound context; confirmation card replaces the booking form. |
-| 7. Wire payload check | Inspect agent console output | Received payload contains `userAction` with `name: "book_restaurant"`, `surfaceId`, `sourceComponentId`, and `context`. |
+| 7. Wire payload check | Inspect agent console output | Received payload contains `action` (or v1.0 `RendererToAgentMessage.action`) with `name: "book_restaurant"`, `surfaceId`, `sourceComponentId`, and `context`. |
 | 8. Telemetry check | Inspect `samples/A2Ui.Avalonia.Shell/bin/Release/net10.0/logs/shell-*.log` | `RequestSummary` Information log and `SurfaceManagerLog` EventIds (`1`, `3`, `4`, `8`) recorded with zero warnings. |
