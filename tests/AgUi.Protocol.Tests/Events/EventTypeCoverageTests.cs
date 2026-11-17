@@ -5,7 +5,7 @@ using System.Reflection;
 using System.Text.Json;
 using AGUI.Abstractions;
 
-namespace Blazejewicz.A2Ui.AgUi.Protocol.Tests.Events;
+namespace Blazejewicz.AgUi.Protocol.Tests.Events;
 
 /// <summary>
 /// Verifies that all public <c>const string</c> fields on <see cref="AGUIEventTypes"/>

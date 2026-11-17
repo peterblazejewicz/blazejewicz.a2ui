@@ -8,13 +8,16 @@ description: Explains the project structure of the A2UI .NET/Avalonia solution. 
 ```
 A2UI/                               <- repo root
 +-- A2Ui.slnx                       <- solution file (9 projects)
-+-- Directory.Build.props            <- shared MSBuild (Nullable, TreatWarningsAsErrors)
++-- Directory.Build.props            <- shared MSBuild (Nullable, TreatWarningsAsErrors, VersionPrefix)
++-- Directory.Build.targets          <- exact [version] intra-repo dependency pinning
 +-- Directory.Packages.props         <- central package management
 +-- global.json                      <- .NET SDK pin (10.0.x)
 +-- AGENTS.md                        <- authoritative repository guide
 +-- README.md                        <- architecture, catalog overview, and quickstart
 +-- RELEASE_NOTES.md                 <- release summary and capabilities
 +-- TELEMETRY.md                     <- ActivitySource and LoggerMessage observability guide
++-- docs/PACKAGE_VERSIONING_POLICY.md <- lock-step:a2ui versioning and cross-repo consumption policy
++-- tools/pack.sh                    <- committed and --local NuGet packaging script
 +-- .mcp.json                        <- project-scoped MCP server definitions
 +-- .agents/skills/                  <- project-scoped agent skills
 |
@@ -45,7 +48,7 @@ A2UI/                               <- repo root
 
 | Folder | Contents |
 |--------|----------|
-| `src/` | Library source projects (`A2Ui.Core` -> `Blazejewicz.A2Ui.Core`, `AgUi.Protocol` -> `Blazejewicz.A2Ui.AgUi.Protocol`, `A2Ui.Avalonia` -> `Blazejewicz.A2Ui.Avalonia`) |
+| `src/` | Library source projects (`A2Ui.Core` -> `Blazejewicz.A2Ui.Core`, `AgUi.Protocol` -> `Blazejewicz.AgUi.Protocol`, `A2Ui.Avalonia` -> `Blazejewicz.A2Ui.Avalonia`) |
 | `tests/` | Unit/headless test projects (`A2Ui.Core.Tests`, `AgUi.Protocol.Tests`, `A2Ui.Avalonia.Tests`) and `A2Ui.TestHelpers` |
 | `samples/` | Sample Avalonia desktop applications (`A2Ui.Avalonia.Gallery`, `A2Ui.Avalonia.Shell`) |
 | `specification/` | Authoritative protocol specs, JSON schemas, catalog examples (`v0_9`, `v0_9_1`, `v1_0`) |

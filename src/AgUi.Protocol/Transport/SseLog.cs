@@ -1,6 +1,6 @@
 using Microsoft.Extensions.Logging;
 
-namespace Blazejewicz.A2Ui.AgUi.Protocol.Transport;
+namespace Blazejewicz.AgUi.Protocol.Transport;
 
 internal static partial class SseLog
 {

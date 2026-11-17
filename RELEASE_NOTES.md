@@ -11,7 +11,7 @@
 ## Included packages and applications
 
 * `Blazejewicz.A2Ui.Core` (`src/A2Ui.Core/`): .NET implementation of the A2UI protocol, state management, data binding, 26 built-in functions (`FunctionRegistry`, `BuiltInFunctions`, `ExpressionParser`), validation, and RPC execution.
-* `Blazejewicz.A2Ui.AgUi.Protocol` (`src/AgUi.Protocol/`): Streaming SSE parser (`SseEventParser`) and tool-call delta accumulator (`ToolCallArgsAccumulator`) built on `AGUI.Abstractions` (`1.0.1`).
+* `Blazejewicz.AgUi.Protocol` (`src/AgUi.Protocol/`): Streaming SSE parser (`SseEventParser`) and tool-call delta accumulator (`ToolCallArgsAccumulator`) built on `AGUI.Abstractions` (`1.0.1`).
 * `Blazejewicz.A2Ui.Avalonia` (`src/A2Ui.Avalonia/`): Native Avalonia `12.1.5` renderer for A2UI surfaces, providing 18 Basic Catalog controls (`CatalogRegistry`, `Controls/A2UiSurface.cs`) and the `AgentEventBridge`.
 * `Blazejewicz.A2Ui.Avalonia.Gallery` (`samples/A2Ui.Avalonia.Gallery/`): Offline desktop gallery loading 79 specification examples across `v0.9` (7 minimal examples), `v0.9.1` (36 basic examples), and `v1.0` (36 Basic Catalog v1 examples).
 * `Blazejewicz.A2Ui.Avalonia.Shell` (`samples/A2Ui.Avalonia.Shell/`): Connected desktop client communicating with A2UI agents over A2A JSON-RPC using `A2A.V0_3` (`1.0.0-preview4`).
@@ -44,6 +44,9 @@
 
 ### API surface changes
 
+* **Lockstep `0.2.0` package and assembly alignment (`lock-step:a2ui`):** Bumped `VersionPrefix` from `0.1.0` to `0.2.0` (`VersionSuffix=dev`) and aligned the three library packages (`Blazejewicz.AgUi.Protocol`, `Blazejewicz.A2Ui.Core`, `Blazejewicz.A2Ui.Avalonia`) with exact `[version]` dependency pinning via `Directory.Build.targets` and `tools/pack.sh`.
+* **AG-UI protocol package, assembly, namespace, and `ActivitySource` alignment:** `src/AgUi.Protocol/AgUi.Protocol.csproj` now sets `PackageId`, `AssemblyName`, and `RootNamespace` to `Blazejewicz.AgUi.Protocol` (and `ActivitySource` name `"AgUi.Protocol"`), separating the standalone AG-UI transport layer from the `Blazejewicz.A2Ui.*` namespace hierarchy.
+* **Function engine relocation to `Blazejewicz.A2Ui.Core.Functions`:** `IFunctionRegistry`, `FunctionRegistry`, `BuiltInFunctions`, `ExpressionParser`, and `FunctionEvaluationContext` moved from `A2Ui.Avalonia` to `Blazejewicz.A2Ui.Core.Functions` so headless and core consumers can evaluate all 26 built-in functions without taking a UI dependency.
 * **Discriminated union internalization (`S-06`):** `OneOf<T1, T2>` and `OneOf<T1, T2, T3>` in `Blazejewicz.A2Ui.Core` (`OneOf.cs`, `OneOf3.cs`) were intentionally changed from `public` to `internal` (and unused legacy `OneOf` helper surface removed) because no public `Blazejewicz.A2Ui.Core` API exposes `OneOf`. Note this as a breaking change if upgrading from an earlier public release that referenced `OneOf` directly.
 
 ## Verification commands

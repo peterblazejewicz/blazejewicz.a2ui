@@ -1,6 +1,6 @@
 using Microsoft.Extensions.Logging;
 
-namespace Blazejewicz.A2Ui.AgUi.Protocol;
+namespace Blazejewicz.AgUi.Protocol;
 
 internal static partial class ToolCallArgsAccumulatorLog
 {

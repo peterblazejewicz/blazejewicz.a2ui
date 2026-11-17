@@ -4,7 +4,6 @@ using Avalonia.Headless.XUnit;
 using Avalonia.Interactivity;
 using Avalonia.Markup.Xaml.Styling;
 using Avalonia.Styling;
-using Blazejewicz.A2Ui.AgUi.Protocol.Transport;
 using Blazejewicz.A2Ui.Avalonia.Catalog;
 using Blazejewicz.A2Ui.Avalonia.Controls;
 using Blazejewicz.A2Ui.Core;
@@ -16,6 +15,7 @@ using Blazejewicz.A2Ui.Core.Messages;
 using Blazejewicz.A2Ui.Core.Rpc;
 using Blazejewicz.A2Ui.Core.Surfaces;
 using Blazejewicz.A2Ui.Core.Tabs;
+using Blazejewicz.AgUi.Protocol.Transport;
 using Xunit;
 
 namespace Blazejewicz.A2Ui.Avalonia.Tests;
@@ -579,8 +579,15 @@ public sealed class V10AvaloniaPhaseTests
     public void LibraryAssembliesAndDefaultStyles_MatchPackageIdsAndLoadCleanly()
     {
         Assert.Equal("Blazejewicz.A2Ui.Core", typeof(SurfaceManager).Assembly.GetName().Name);
-        Assert.Equal("Blazejewicz.A2Ui.AgUi.Protocol", typeof(SseEventParser).Assembly.GetName().Name);
+        Assert.Equal("Blazejewicz.AgUi.Protocol", typeof(SseEventParser).Assembly.GetName().Name);
         Assert.Equal("Blazejewicz.A2Ui.Avalonia", typeof(A2UiSurface).Assembly.GetName().Name);
+
+        Version? coreVersion = typeof(SurfaceManager).Assembly.GetName().Version;
+        Assert.NotNull(coreVersion);
+        Assert.Equal(0, coreVersion.Major);
+        Assert.True(coreVersion >= new Version(0, 2, 0, 0), $"Expected version >= 0.2.0.0, actual: {coreVersion}");
+        Assert.Equal(coreVersion, typeof(SseEventParser).Assembly.GetName().Version);
+        Assert.Equal(coreVersion, typeof(A2UiSurface).Assembly.GetName().Version);
 
         var surfaceControl = new A2UiSurface();
         var styleInclude = Assert.Single(surfaceControl.Styles.OfType<StyleInclude>());

@@ -1,7 +1,7 @@
 using System.Text.Json;
 using AGUI.Abstractions;
 
-namespace Blazejewicz.A2Ui.AgUi.Protocol.Tests.Events;
+namespace Blazejewicz.AgUi.Protocol.Tests.Events;
 
 public sealed class EventSerializationTests
 {

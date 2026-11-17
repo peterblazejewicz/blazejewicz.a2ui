@@ -4,10 +4,10 @@ using System.Text.Json;
 using System.Threading.Channels;
 using AGUI.Abstractions;
 using Avalonia.Threading;
-using Blazejewicz.A2Ui.AgUi.Protocol;
 using Blazejewicz.A2Ui.Core.Messages;
 using Blazejewicz.A2Ui.Core.Surfaces;
 using Blazejewicz.A2Ui.Core.Versioning;
+using Blazejewicz.AgUi.Protocol;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 

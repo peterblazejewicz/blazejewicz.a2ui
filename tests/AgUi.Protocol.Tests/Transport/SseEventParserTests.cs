@@ -4,9 +4,9 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using AGUI.Abstractions;
-using Blazejewicz.A2Ui.AgUi.Protocol.Transport;
+using Blazejewicz.AgUi.Protocol.Transport;
 
-namespace Blazejewicz.A2Ui.AgUi.Protocol.Tests.Transport;
+namespace Blazejewicz.AgUi.Protocol.Tests.Transport;
 
 public sealed class SseEventParserTests
 {

@@ -7,7 +7,9 @@
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <LangVersion>14</LangVersion>
     <Deterministic>true</Deterministic>
-    <VersionPrefix>0.1.0</VersionPrefix>
+    <VersionPrefix>0.2.0</VersionPrefix>
+    <VersionSuffix>dev</VersionSuffix>
+    <ContinuousIntegrationBuild Condition="'$(GITHUB_ACTIONS)' == 'true' or '$(CI)' == 'true'">true</ContinuousIntegrationBuild>
     <Authors>Piotr Błażejewicz (Peter Blazejewicz)</Authors>
     <Copyright>Copyright (c) Piotr Błażejewicz</Copyright>
     <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
@@ -20,7 +22,7 @@
     <IncludeSymbols>true</IncludeSymbols>
     <SymbolPackageFormat>snupkg</SymbolPackageFormat>
     <PackageReadmeFile>README.md</PackageReadmeFile>
-    <PackageTags>a2ui;agent-to-ui;ag-ui;a2a;avalonia;llm;declarative-ui;json-pointer</PackageTags>
+    <PackageTags>a2ui;agent-to-ui;ag-ui;a2a;avalonia;llm;declarative-ui;json-pointer;lock-step:a2ui</PackageTags>
   </PropertyGroup>
 
   <ItemGroup>

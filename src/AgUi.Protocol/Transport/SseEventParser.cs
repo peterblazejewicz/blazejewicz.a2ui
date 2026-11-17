@@ -2,7 +2,7 @@ using System.Text.Json;
 using AGUI.Abstractions;
 using Microsoft.Extensions.Logging;
 
-namespace Blazejewicz.A2Ui.AgUi.Protocol.Transport;
+namespace Blazejewicz.AgUi.Protocol.Transport;
 
 /// <summary>
 /// Parses AG-UI Server-Sent Events stream.

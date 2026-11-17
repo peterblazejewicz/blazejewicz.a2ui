@@ -4,7 +4,7 @@ using AGUI.Abstractions;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
-namespace Blazejewicz.A2Ui.AgUi.Protocol;
+namespace Blazejewicz.AgUi.Protocol;
 
 /// <summary>
 /// Accumulates TOOL_CALL_ARGS delta strings per toolCallId.

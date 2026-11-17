@@ -1,6 +1,6 @@
 using AGUI.Abstractions;
 
-namespace Blazejewicz.A2Ui.AgUi.Protocol.Tests;
+namespace Blazejewicz.AgUi.Protocol.Tests;
 
 public sealed class ToolCallArgsAccumulatorTests
 {

@@ -2,9 +2,9 @@
   <PropertyGroup>
     <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
     <ImplicitUsings>enable</ImplicitUsings>
-    <AssemblyName>Blazejewicz.A2Ui.AgUi.Protocol</AssemblyName>
-    <RootNamespace>Blazejewicz.A2Ui.AgUi.Protocol</RootNamespace>
-    <PackageId>Blazejewicz.A2Ui.AgUi.Protocol</PackageId>
+    <AssemblyName>Blazejewicz.AgUi.Protocol</AssemblyName>
+    <RootNamespace>Blazejewicz.AgUi.Protocol</RootNamespace>
+    <PackageId>Blazejewicz.AgUi.Protocol</PackageId>
     <Description>AG-UI event types and transport for .NET</Description>
     <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
   </PropertyGroup>

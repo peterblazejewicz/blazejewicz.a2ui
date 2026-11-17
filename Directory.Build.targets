@@ -1,0 +1,19 @@
+<Project>
+  <!--
+    A package of this repository depends on another package of this repository at the exact
+    version of the same pack run, written [x] in the generated .nuspec. Because the three
+    Blazejewicz.AgUi.Protocol, Blazejewicz.A2Ui.Core, and Blazejewicz.A2Ui.Avalonia packages
+    form the lock-step:a2ui train (and A2Ui.Core grants InternalsVisibleTo to A2Ui.Avalonia),
+    a consumer that attempts to restore mixed versions gets NU1608 or NU1107 at restore time
+    rather than a runtime failure.
+  -->
+  <Target Name="PinRepositoryDependenciesExactly"
+          AfterTargets="_GetProjectReferenceVersions"
+          Condition="'@(_ProjectReferencesWithVersions)' != ''">
+    <ItemGroup>
+      <_ProjectReferencesWithVersions Condition="!$([System.String]::Copy('%(ProjectVersion)').StartsWith('['))">
+        <ProjectVersion>[%(ProjectVersion)]</ProjectVersion>
+      </_ProjectReferencesWithVersions>
+    </ItemGroup>
+  </Target>
+</Project>

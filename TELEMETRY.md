@@ -18,7 +18,7 @@ Five `ActivitySource` instances instrument execution across the solution:
 | `ActivitySource` Name | Defined In | Span Name(s) | Kind | Key Tags |
 |-----------------------|------------|--------------|------|----------|
 | `A2Ui.Core` | `src/A2Ui.Core/Diagnostics.cs` | `Surface.CreateSurface`<br/>`Surface.UpdateComponents`<br/>`Surface.UpdateDataModel`<br/>`Surface.DeleteSurface`<br/>`Surface.CallRendererFunction`<br/>`Surface.AgentFunctionResponse` | `Internal` | `a2ui.surface_id`, `a2ui.message_type` |
-| `A2Ui.AgUi.Protocol` | `src/AgUi.Protocol/Diagnostics.cs` | `ToolCallArgs.Complete` | `Internal` | `a2ui.tool_call_id`, `a2ui.total_length` |
+| `AgUi.Protocol` | `src/AgUi.Protocol/Diagnostics.cs` | `ToolCallArgs.Complete` | `Internal` | `a2ui.tool_call_id`, `a2ui.total_length` |
 | `A2Ui.Avalonia.Renderer` | `src/A2Ui.Avalonia/Diagnostics.cs` | `Renderer.Render` | `Internal` | `a2ui.surface_id`, `a2ui.catalog_id` |
 | `A2Ui.Avalonia.Bridge` | `src/A2Ui.Avalonia/Diagnostics.cs` | `EventBridge.ProcessLoop`<br/>`EventBridge.DispatchEvent` | `Consumer`<br/>`Internal` | `a2ui.event_type`, `a2ui.event_index` |
 | `A2Ui.Shell.A2AClient` | `samples/A2Ui.Avalonia.Shell/Diagnostics.cs` | `A2A.SendMessage` | `Client` | `http.method`, `http.url`, `http.status_code`, `http.response_content_length`, `a2a.correlation_id`, `a2a.message_id`, `a2ui.message_count` |
@@ -51,7 +51,7 @@ All log events are emitted through source-generated `[LoggerMessage]` delegates 
 | `SurfaceManagerLog` | `Blazejewicz.A2Ui.Core.Surfaces.SurfaceManager` | `1`–`11` | Surface creation/deletion/clearing (`Information`), component/data-model updates and message dispatch (`Debug`), duplicate/unknown/missing-root/validation/data-model warnings (`Warning`). |
 | `FunctionLog` | `Blazejewicz.A2Ui.Core.Functions.FunctionRegistry` | `1`–`2` | Unknown function lookup and function evaluation errors (`Warning`). |
 | `SseLog` | Caller `ILogger` (`SseEventParser.ParseAsync`) | `1` | Malformed or unknown SSE event line skipped (`Warning`). |
-| `ToolCallArgsAccumulatorLog` | `Blazejewicz.A2Ui.AgUi.Protocol.ToolCallArgsAccumulator` | `1`–`4` | Tool-call accumulation start/completion (`Debug`), delta progress (`Trace`), and orphaned incomplete calls (`Warning`). |
+| `ToolCallArgsAccumulatorLog` | `Blazejewicz.AgUi.Protocol.ToolCallArgsAccumulator` | `1`–`4` | Tool-call accumulation start/completion (`Debug`), delta progress (`Trace`), and orphaned incomplete calls (`Warning`). |
 | `CatalogRegistryLog` | `Blazejewicz.A2Ui.Avalonia.Catalog.CatalogRegistry` | `1`–`2` | Control registration (`Debug`) and unknown component lookup misses (`Warning`). |
 | `CheckLog` | Renderer `ILogger` (`Blazejewicz.A2Ui.Avalonia.A2UiRenderer`) | `1` | Check condition evaluation failure warnings (`Warning`). |
 | `MediaLog` | `Blazejewicz.A2Ui.Avalonia.Catalog.Entries.ImageCatalogEntry` | `1`–`2` | Oversized image skips and image download/decode failures (`Warning`). |

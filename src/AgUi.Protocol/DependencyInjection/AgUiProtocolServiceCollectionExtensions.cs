@@ -1,5 +1,5 @@
-using Blazejewicz.A2Ui.AgUi.Protocol;
-using Blazejewicz.A2Ui.AgUi.Protocol.Transport;
+using Blazejewicz.AgUi.Protocol;
+using Blazejewicz.AgUi.Protocol.Transport;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 
 namespace Microsoft.Extensions.DependencyInjection;

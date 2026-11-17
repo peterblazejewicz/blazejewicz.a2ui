@@ -30,10 +30,10 @@ Authority rule:
 
 The repository is structured around the .NET 10 SDK and native Avalonia desktop renderer:
 
-* `src/`: Library packages.
-  * `A2Ui.Core/`: Core protocol DTOs, version adapters, `SurfaceManager`, RFC 6901 `DataModel`, `DynamicValue` evaluation, 26 built-in functions (`FunctionRegistry`, `BuiltInFunctions`, `ExpressionParser`), `RpcHandler`, and validation engines (`CompositionValidator`, `Uax31Validator`, `RegexSubset`) (`net8.0;net10.0`).
-  * `AgUi.Protocol/`: Streaming SSE parser (`SseEventParser`) and tool-call accumulator (`ToolCallArgsAccumulator`) built on `AGUI.Abstractions` (`1.0.1`) (`net8.0;net10.0`).
-  * `A2Ui.Avalonia/`: Native Avalonia `12.1.5` renderer with 18 Basic Catalog controls (`CatalogRegistry`, `Controls/A2UiSurface.cs`), render-time version scoping, media URL security filtering, and event bridge (`AgentEventBridge`) (`net10.0`).
+* `src/`: Library packages (`lock-step:a2ui` train).
+  * `A2Ui.Core/` (`Blazejewicz.A2Ui.Core`): Core protocol DTOs, version adapters, `SurfaceManager`, RFC 6901 `DataModel`, `DynamicValue` evaluation, 26 built-in functions (`FunctionRegistry`, `BuiltInFunctions`, `ExpressionParser`), `RpcHandler`, and validation engines (`CompositionValidator`, `Uax31Validator`, `RegexSubset`) (`net8.0;net10.0`).
+  * `AgUi.Protocol/` (`Blazejewicz.AgUi.Protocol`): Streaming SSE parser (`SseEventParser`) and tool-call accumulator (`ToolCallArgsAccumulator`) built on `AGUI.Abstractions` (`1.0.1`) (`net8.0;net10.0`).
+  * `A2Ui.Avalonia/` (`Blazejewicz.A2Ui.Avalonia`): Native Avalonia `12.1.5` renderer with 18 Basic Catalog controls (`CatalogRegistry`, `Controls/A2UiSurface.cs`), render-time version scoping, media URL security filtering, and event bridge (`AgentEventBridge`) (`net10.0`).
 * `tests/`: Automated test projects and shared test utilities.
   * `A2Ui.Core.Tests/`: Unit tests and telemetry scenario tests for core functionality (`net8.0;net10.0`).
   * `AgUi.Protocol.Tests/`: Unit tests for AG-UI streaming and accumulator logic (`net8.0;net10.0`).
@@ -42,7 +42,8 @@ The repository is structured around the .NET 10 SDK and native Avalonia desktop 
 * `samples/`: Avalonia desktop applications (`net10.0`).
   * `A2Ui.Avalonia.Gallery/`: Offline specification replay gallery with 79 examples across `v0.9`, `v0.9.1`, and `v1.0`.
   * `A2Ui.Avalonia.Shell/`: Connected desktop client communicating with A2A agents over JSON-RPC via `A2A.V0_3` (`1.0.0-preview4`).
-* `README.md`, `RELEASE_NOTES.md`, `TELEMETRY.md`: Architecture overview, release notes, and observability documentation.
+* `tools/pack.sh`: Lockstep NuGet packaging script supporting committed (`<VersionPrefix>-dev.<count>.g<sha7>`) and local inner-loop (`--local`, `<VersionPrefix>-local.<count>.g<sha7>.<ms>`) pack modes.
+* `README.md`, `RELEASE_NOTES.md`, `TELEMETRY.md`, `docs/PACKAGE_VERSIONING_POLICY.md`: Architecture overview, release notes, observability documentation, and package versioning policy.
 * `specification/`: Versioned upstream protocol schemas, catalogs, and documentation (`v0_9/`, `v0_9_1/`, `v1_0/`).
 * `catalogs/basic/v1/`: v1.0 Basic Catalog specification and golden example payloads.
 * `conformance/core/`: Conformance test corpora and test suites.
@@ -55,7 +56,7 @@ All projects in this repository use modern .NET 10 conventions:
 * Solution format: Microsoft Solution File (`A2Ui.slnx`).
 * Target frameworks: Core SDK and test projects target .NET 8 and .NET 10 (`net8.0;net10.0`); Avalonia renderer and desktop applications target .NET 10 (`net10.0`), all using C# 14 language version.
 * Central Package Management (CPM): Dependencies and package versions are managed centrally in `Directory.Packages.props`. Do not declare package versions in individual `.csproj` files.
-* Build settings: Shared build configuration in `Directory.Build.props` enforces `Nullable` reference types, `TreatWarningsAsErrors=true`, and `EnforceCodeStyleInBuild=true`.
+* Build and packaging settings: Shared build configuration in `Directory.Build.props` enforces `Nullable` reference types, `TreatWarningsAsErrors=true`, `EnforceCodeStyleInBuild=true`, and lockstep `0.x` versioning (`VersionPrefix` + `VersionSuffix`). `Directory.Build.targets` pins intra-repository `<ProjectReference>` dependencies to exact `[version]` ranges in generated `.nuspec` files.
 * Testing platform: Tests run on the Microsoft Testing Platform (MTP) with xUnit v3.
 * Static analysis: Managed by Roslyn analyzers (`Microsoft.CodeAnalysis.NetAnalyzers` and `Roslynator.Analyzers`).
 
