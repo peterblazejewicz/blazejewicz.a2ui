@@ -99,12 +99,14 @@ The solution (`A2Ui.slnx`) contains 9 projects:
 | `Blazejewicz.A2Ui.Avalonia.Tests` | `net10.0` | `tests/A2Ui.Avalonia.Tests/` | Headless renderer tests, component tests, and specification example verifications |
 | `Blazejewicz.A2Ui.TestHelpers` | `net8.0;net10.0` | `tests/A2Ui.TestHelpers/` | Shared testing utilities, test logger provider, and activity listener |
 
-## Build, test, and run
+## Build, test, pack, and run
 
 ```bash
 dotnet format A2Ui.slnx --verify-no-changes
 dotnet build A2Ui.slnx --configuration Release
 dotnet test A2Ui.slnx --configuration Release --no-build
+bash tools/pack.sh
+bash tools/pack.sh --local
 dotnet run --project samples/A2Ui.Avalonia.Gallery/A2Ui.Avalonia.Gallery.csproj --configuration Release
 dotnet run --project samples/A2Ui.Avalonia.Shell/A2Ui.Avalonia.Shell.csproj --configuration Release
 ```
@@ -112,7 +114,6 @@ dotnet run --project samples/A2Ui.Avalonia.Shell/A2Ui.Avalonia.Shell.csproj --co
 ## Documentation
 
 * [`AGENTS.md`](AGENTS.md)
-* [`RELEASE_NOTES.md`](RELEASE_NOTES.md)
 * [`TELEMETRY.md`](TELEMETRY.md)
 * [`samples/A2Ui.Avalonia.Gallery/README.md`](samples/A2Ui.Avalonia.Gallery/README.md)
 * [`samples/A2Ui.Avalonia.Shell/README.md`](samples/A2Ui.Avalonia.Shell/README.md)

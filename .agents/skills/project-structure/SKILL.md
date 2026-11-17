@@ -14,9 +14,7 @@ A2UI/                               <- repo root
 +-- global.json                      <- .NET SDK pin (10.0.x)
 +-- AGENTS.md                        <- authoritative repository guide
 +-- README.md                        <- architecture, catalog overview, and quickstart
-+-- RELEASE_NOTES.md                 <- release summary and capabilities
 +-- TELEMETRY.md                     <- ActivitySource and LoggerMessage observability guide
-+-- docs/PACKAGE_VERSIONING_POLICY.md <- lock-step:a2ui versioning and cross-repo consumption policy
 +-- tools/pack.sh                    <- committed and --local NuGet packaging script
 +-- .mcp.json                        <- project-scoped MCP server definitions
 +-- .agents/skills/                  <- project-scoped agent skills

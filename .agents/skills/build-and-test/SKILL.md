@@ -44,6 +44,10 @@ dotnet run --project tests/A2Ui.Core.Tests --framework net10.0 --configuration R
 # Run sample desktop applications
 dotnet run --project samples/A2Ui.Avalonia.Gallery/A2Ui.Avalonia.Gallery.csproj --configuration Release
 dotnet run --project samples/A2Ui.Avalonia.Shell/A2Ui.Avalonia.Shell.csproj --configuration Release
+
+# Pack NuGet packages (committed mode -> artifacts/packages/, local mode -> artifacts/local-feed/)
+bash tools/pack.sh
+bash tools/pack.sh --local
 ```
 
 ## Speeding Up Builds and Testing

@@ -203,12 +203,11 @@ public sealed class DynamicValueConverterTests
         Assert.NotEqual(a, b);
     }
 
-    // ── F4: non-null diagnostics ─────────────────────────────────────────
+    // ── Non-null diagnostics ─────────────────────────────────────────────
 
     [Fact]
     public void Read_ObjectWithoutDiscriminator_ThrowsJsonException()
     {
-        // Previously returned null silently; now surfaces the schema violation.
         var ex = Assert.Throws<JsonException>(() =>
             JsonSerializer.Deserialize<DynamicValue>("""{"someKey":"value"}""", s_opts)
         );

@@ -753,7 +753,7 @@ public sealed class DataModelTests
         Assert.Contains("absolute JSON Pointer", ex.Message);
     }
 
-    // ── Root reads & slash normalization (A-08 / conformance data_model.yaml) ──
+    // ── Root reads & slash normalization (conformance data_model.yaml) ────
 
     [Theory]
     [InlineData("/")]
@@ -785,7 +785,7 @@ public sealed class DataModelTests
         Assert.Null(dm.Resolve(DynamicValue.FromPath("/a/b")));
     }
 
-    // ── RFC 6901 §4 array index grammar & MaxArrayIndex bounds (A-07) ──
+    // ── RFC 6901 §4 array index grammar & MaxArrayIndex bounds ───────────
 
     [Theory]
     [InlineData("/items/01")]

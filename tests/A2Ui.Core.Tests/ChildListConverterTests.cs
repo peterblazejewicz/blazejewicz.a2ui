@@ -194,14 +194,11 @@ public sealed class ChildListConverterTests
         Assert.Equal("formatString", fn.Call.Call);
     }
 
-    // ── F4: non-null diagnostics ─────────────────────────────────────────
+    // ── Non-null diagnostics ─────────────────────────────────────────────
 
     [Fact]
     public void ChildList_Read_TemplateMissingPath_ThrowsJsonException()
     {
-        // Previously the converter silently returned null for a template object
-        // missing one of the required keys, which would collapse the entire
-        // children declaration.
         var ex = Assert.Throws<JsonException>(() =>
             JsonSerializer.Deserialize<ChildList>("""{"componentId":"tmpl"}""", s_opts)
         );

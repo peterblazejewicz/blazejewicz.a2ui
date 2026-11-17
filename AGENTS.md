@@ -43,7 +43,7 @@ The repository is structured around the .NET 10 SDK and native Avalonia desktop 
   * `A2Ui.Avalonia.Gallery/`: Offline specification replay gallery with 79 examples across `v0.9`, `v0.9.1`, and `v1.0`.
   * `A2Ui.Avalonia.Shell/`: Connected desktop client communicating with A2A agents over JSON-RPC via `A2A.V0_3` (`1.0.0-preview4`).
 * `tools/pack.sh`: Lockstep NuGet packaging script supporting committed (`<VersionPrefix>-dev.<count>.g<sha7>`) and local inner-loop (`--local`, `<VersionPrefix>-local.<count>.g<sha7>.<ms>`) pack modes.
-* `README.md`, `RELEASE_NOTES.md`, `TELEMETRY.md`, `docs/PACKAGE_VERSIONING_POLICY.md`: Architecture overview, release notes, observability documentation, and package versioning policy.
+* `README.md`, `TELEMETRY.md`: Architecture overview and observability reference.
 * `specification/`: Versioned upstream protocol schemas, catalogs, and documentation (`v0_9/`, `v0_9_1/`, `v1_0/`).
 * `catalogs/basic/v1/`: v1.0 Basic Catalog specification and golden example payloads.
 * `conformance/core/`: Conformance test corpora and test suites.

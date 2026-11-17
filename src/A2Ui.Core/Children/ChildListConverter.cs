@@ -34,9 +34,7 @@ internal sealed class ChildListConverter : JsonConverter<ChildList>
                 return ChildList.FromTemplate(compIdEl.GetString()!, pathEl.GetString()!);
             }
 
-            // A ChildList object must be a template with BOTH componentId and path.
-            // Previously we returned null here, silently dropping the entire children
-            // declaration when one key was missing or misspelled.
+            // A ChildList object must be a template with both componentId and path.
             throw new JsonException(
                 "ChildList object must contain both 'componentId' and 'path' properties to describe a template."
             );
